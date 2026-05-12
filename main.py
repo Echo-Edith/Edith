@@ -1,161 +1,143 @@
-import os, discord, sqlite3, datetime
-from discord.ext import commands
-from discord import ui
-from flask import Flask
+import os, discord, sqlite3, datetime, flask
+from discord.ext import commands, tasks
 from threading import Thread
 
 # --- DATABASE ARCHIVE ---
 db = sqlite3.connect('edith_mainframe.db')
 cursor = db.cursor()
 cursor.execute('CREATE TABLE IF NOT EXISTS storage (key TEXT PRIMARY KEY, content TEXT)')
+cursor.execute('CREATE TABLE IF NOT EXISTS custom_cmds (cmd_name TEXT PRIMARY KEY, response TEXT)')
 db.commit()
 
 # --- UPTIME SERVICE (PORT 8080) ---
-app = Flask('')
+app = flask.Flask('')
 @app.route('/')
 def home(): return "E.D.I.T.H. Mainframe: Online"
-
-def run_flask():
-    app.run(host='0.0.0.0', port=8080)
-
-def keep_alive():
-    t = Thread(target=run_flask)
-    t.start()
+def run(): app.run(host='0.0.0.0', port=8080)
+def keep_alive(): Thread(target=run).start()
 
 # --- CONFIGURATION ---
 TOKEN = os.environ.get('TOKEN')
 OWNER_ID = 1219266886143967245 
-ROLE_NAME = "New Comer" 
+ROLE_NAME = "New Comer"
 
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix='!', intents=intents, case_insensitive=True)
 
-# --- 🔒 ABSOLUTE SOVEREIGNTY CHECK ---
+# --- 🔒 ABSOLUTE SOVEREIGNTY ---
 @bot.check
 async def globally_only_owner(ctx):
-    # This prevents anyone but YOU from triggering commands.
     return ctx.author.id == OWNER_ID
 
 # --- 🛡️ 2FA ACCESS CONTROL UI ---
-class EntryProtocol(ui.View):
-    def __init__(self, member: discord.Member):
+class EntryProtocol(discord.ui.View):
+    def __init__(self, member):
         super().__init__(timeout=None)
         self.member = member
 
-    @ui.button(label="GRANT ACCESS", style=discord.ButtonStyle.green, emoji="🛡️")
-    async def grant(self, interaction: discord.Interaction, button: ui.Button):
-        if interaction.user.id != OWNER_ID:
-            return await interaction.response.send_message("⚠️ Biometric mismatch.", ephemeral=True)
-        
+    @discord.ui.button(label="GRANT ACCESS", style=discord.ButtonStyle.green, emoji="🛡️")
+    async def grant(self, interaction: discord.Interaction, button: discord.ui.Button):
         role = discord.utils.get(self.member.guild.roles, name=ROLE_NAME)
         if role:
             await self.member.add_roles(role)
-            embed = discord.Embed(title="✅ ACCESS GRANTED", description=f"User **{self.member.name}** has been admitted.", color=0x00ff00)
-            await interaction.response.edit_message(embed=embed, view=None)
+            await interaction.response.edit_message(content="✅ **Verified.** User admitted.", view=None)
         else:
-            await interaction.response.send_message(f"❌ Error: Role '{ROLE_NAME}' not found.", ephemeral=True)
+            await interaction.response.send_message(f"❌ Role '{ROLE_NAME}' missing.", ephemeral=True)
 
-    @ui.button(label="EJECT TARGET", style=discord.ButtonStyle.red, emoji="🚫")
-    async def reject(self, interaction: discord.Interaction, button: ui.Button):
-        if interaction.user.id != OWNER_ID:
-            return await interaction.response.send_message("⚠️ Biometric mismatch.", ephemeral=True)
-        
-        await self.member.kick(reason="Mainframe entry denied by Administrator.")
-        embed = discord.Embed(title="🚫 TARGET EJECTED", description=f"**{self.member.name}** removed from perimeter.", color=0xff0000)
-        await interaction.response.edit_message(embed=embed, view=None)
+    @discord.ui.button(label="EJECT TARGET", style=discord.ButtonStyle.red, emoji="🚫")
+    async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.member.kick(reason="Denied by Administrator.")
+        await interaction.response.edit_message(content="🚫 **Target Ejected.**", view=None)
 
 # --- 🛠️ CORE COMMANDS ---
 @bot.command()
 async def ping(ctx):
-    embed = discord.Embed(title="🛰️ SIGNAL STRENGTH", description=f"Latency: **{round(bot.latency * 1000)}ms**\nPort 8080: **Open**", color=0x00ffff)
-    await ctx.send(embed=embed)
+    await ctx.send(f"🛰️ **Signal:** {round(bot.latency * 1000)}ms | **Port 8080:** Open")
+
+@bot.command()
+async def aa(ctx, name: str, *, value: str):
+    """Adds a custom command: !aa [name] [response]"""
+    name = name.lower().replace("!", "")
+    cursor.execute("INSERT OR REPLACE INTO custom_cmds VALUES (?, ?)", (name, value))
+    db.commit()
+    await ctx.send(f"🌌 **Protocol Updated:** `!{name}` has been added to my logic.")
 
 @bot.command()
 async def cmds(ctx):
-    embed = discord.Embed(title="🕶️ E.D.I.T.H. MANIFEST", color=0x2b2d31, timestamp=datetime.datetime.now())
-    embed.add_field(name="🛡️ GUARDIAN", value="`!setup` - Deploy Sectors\n`!ping` - Latency Check", inline=False)
-    embed.add_field(name="📦 STORAGE", value="`!store [key] [val]`\n`!storage` - Show Keys\n`!unstore [key]`\n`!delete [key]`", inline=False)
-    embed.set_footer(text="Superintendent Protocol v14.0 | Owner Only")
+    embed = discord.Embed(title="🕶️ E.D.I.T.H. MANIFEST", color=0x2b2d31)
+    embed.add_field(name="🛡️ GUARDIAN", value="`!setup`, `!ping`, `!aa (name) (val)`")
+    embed.add_field(name="📦 STORAGE", value="`!store (k) (v)`, `!storage`, `!unstore (k)`, `!delete (k)`")
+    
+    cursor.execute("SELECT cmd_name FROM custom_cmds")
+    customs = cursor.fetchall()
+    if customs:
+        embed.add_field(name="🧬 CUSTOM COMMANDS", value=", ".join([f"`!{c[0]}`" for c in customs]), inline=False)
+    
     await ctx.send(embed=embed)
 
 @bot.command()
 async def setup(ctx):
-    overwrites = {
-        ctx.guild.default_role: discord.PermissionOverwrite(read_messages=False),
-        ctx.guild.me: discord.PermissionOverwrite(read_messages=True),
-        ctx.author: discord.PermissionOverwrite(read_messages=True)
-    }
+    overwrites = {ctx.guild.default_role: discord.PermissionOverwrite(read_messages=False),
+                  ctx.guild.me: discord.PermissionOverwrite(read_messages=True),
+                  ctx.author: discord.PermissionOverwrite(read_messages=True)}
     
-    # Sector 1: The Entry Gate (2FA)
-    gate = discord.utils.get(ctx.guild.text_channels, name="entry-gate")
-    if not gate: gate = await ctx.guild.create_text_channel('entry-gate', overwrites=overwrites)
+    gate = await ctx.guild.create_text_channel('entry-gate', overwrites=overwrites)
+    logs = await ctx.guild.create_text_channel('war-room', overwrites=overwrites)
     
-    # Sector 2: The War Room (Logs)
-    war = discord.utils.get(ctx.guild.text_channels, name="war-room")
-    if not war: war = await ctx.guild.create_text_channel('war-room', overwrites=overwrites)
-    
-    embed = discord.Embed(title="⚙️ SECURITY SECTORS ONLINE", color=0x00ff00)
-    embed.add_field(name="🚪 Entry Gate", value=f"{gate.mention} (2FA Pings)", inline=True)
-    embed.add_field(name="📜 War Room", value=f"{war.mention} (Tactical Logs)", inline=True)
-    await ctx.send(embed=embed)
+    await ctx.send(f"✅ **Sectors Established.**\nGate: {gate.mention}\nLogs: {logs.mention}")
 
-# --- 📦 STORAGE ENGINE ---
+# --- 📦 STORAGE ---
 @bot.command()
-async def store(ctx, key: str, *, val: str):
-    cursor.execute("INSERT OR REPLACE INTO storage VALUES (?, ?)", (key.lower(), val))
+async def store(ctx, k, *, v):
+    cursor.execute("INSERT OR REPLACE INTO storage VALUES (?, ?)", (k.lower(), v))
     db.commit()
-    await ctx.send(f"💾 Archives updated. Key: `{key}`.")
+    await ctx.send(f"💾 Archived: `{k}`")
 
 @bot.command()
 async def storage(ctx):
     cursor.execute("SELECT key FROM storage")
-    rows = cursor.fetchall()
-    keys = "\n".join([f"• {r[0]}" for r in rows]) if rows else "Mainframe storage empty."
-    embed = discord.Embed(title="🗄️ STORAGE DATABASE", description=keys, color=0x3498db)
-    await ctx.send(embed=embed)
+    res = cursor.fetchall()
+    await ctx.send(f"🗄️ **Archives:** " + (", ".join([f"`{r[0]}`" for r in res]) if res else "Empty"))
 
 @bot.command()
-async def unstore(ctx, key: str):
-    cursor.execute("SELECT content FROM storage WHERE key = ?", (key.lower(),))
-    row = cursor.fetchone()
-    if row: await ctx.send(f"📦 **Retrieved Data:**\n```\n{row[0]}\n```")
-    else: await ctx.send(f"❌ Key `{key}` not found.")
+async def unstore(ctx, k):
+    cursor.execute("SELECT content FROM storage WHERE key=?", (k.lower(),))
+    res = cursor.fetchone()
+    await ctx.send(f"📦 **Data:** `{res[0]}`" if res else "❌ Not found.")
 
 @bot.command()
-async def delete(ctx, key: str):
-    cursor.execute("DELETE FROM storage WHERE key = ?", (key.lower(),))
+async def delete(ctx, k):
+    cursor.execute("DELETE FROM storage WHERE key=?", (k.lower(),))
     db.commit()
-    await ctx.send(f"🗑️ `{key}` wiped.")
+    await ctx.send(f"🗑️ Purged: `{k}`")
 
-# --- 🚨 AUTOMATED GUARDIAN LOGIC ---
+# --- 🚨 EVENTS & CUSTOM LOGIC ---
+@bot.event
+async def on_message(message):
+    if message.author.bot or message.author.id != OWNER_ID: return
+
+    if message.content.startswith('!'):
+        cmd_name = message.content[1:].split()[0].lower()
+        if not bot.get_command(cmd_name):
+            cursor.execute("SELECT response FROM custom_cmds WHERE cmd_name=?", (cmd_name,))
+            custom = cursor.fetchone()
+            if custom: return await message.channel.send(custom[0])
+
+    await bot.process_commands(message)
+
 @bot.event
 async def on_member_join(member):
     gate = discord.utils.get(member.guild.text_channels, name="entry-gate")
     if gate:
-        embed = discord.Embed(title="👤 ACCESS BREACH DETECTED", color=0xffa500, timestamp=datetime.datetime.now())
-        embed.set_thumbnail(url=member.display_avatar.url)
-        embed.add_field(name="User", value=f"{member.mention} ({member.id})", inline=False)
-        
-        view = EntryProtocol(member)
-        await gate.send(content=f"🚨 <@{OWNER_ID}> — **2FA REQUIRED.** Confirm biometrics to grant entry.", embed=embed, view=view)
+        embed = discord.Embed(title="👤 BREACH DETECTED", description=f"Target: {member.mention}", color=0xffa500)
+        await gate.send(content=f"🚨 <@{OWNER_ID}> — 2FA REQUIRED", embed=embed, view=EntryProtocol(member))
 
 @bot.event
-async def on_message_delete(message):
-    war_room = discord.utils.get(message.guild.text_channels, name="war-room")
-    if war_room and not message.author.bot:
-        embed = discord.Embed(title="🗑️ MESSAGE DELETED", color=0xff0000)
-        embed.add_field(name="User", value=message.author.name, inline=True)
-        embed.add_field(name="Channel", value=message.channel.mention, inline=True)
-        embed.add_field(name="Content", value=message.content or "[Media]", inline=False)
-        await war_room.send(embed=embed)
+async def on_message_delete(msg):
+    logs = discord.utils.get(msg.guild.text_channels, name="war-room")
+    if logs and not msg.author.bot:
+        await logs.send(f"🗑️ **Deleted:** {msg.author.name} in {msg.channel.mention}: `{msg.content}`")
 
-@bot.event
-async def on_guild_update(before, after):
-    war_room = discord.utils.get(after.text_channels, name="war-room")
-    if war_room:
-        await war_room.send("⚠️ **ALERT:** Server-wide setting modification detected.")
-
-# --- INITIALIZE ---
+# --- START ---
 keep_alive()
-
 bot.run(TOKEN)
