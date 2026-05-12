@@ -157,34 +157,5 @@ async def on_guild_update(before, after):
 
 # --- INITIALIZE ---
 keep_alive()
-# --- THE FORTRESS CRON-SYSTEM ---
-class SecurityHeartbeat(commands.Cog):
-    def __init__(self, bot):
-        self.bot = bot
-        self.mainframe_ping.start() # This starts the actual loop
-
-    def cog_unload(self):
-        self.mainframe_ping.cancel()
-
-    @tasks.loop(minutes=5.0)
-    async def mainframe_ping(self):
-        # This keeps Port 8080 active by pinging itself
-        try:
-            # We use a non-blocking internal check
-            print(f"🛰️ Heartbeat: {datetime.datetime.now().strftime('%H:%M:%S')} | Port 8080 Secure.")
-        except Exception as e:
-            print(f"⚠️ Heartbeat Error: {e}")
-
-    @mainframe_ping.before_loop
-    async def before_ping(self):
-        await self.bot.wait_until_ready() # Wait until EDITH is logged in
-
-# Add the system to the bot on startup
-@bot.event
-async def on_ready():
-    # If a cog by this name isn't already loaded, load it
-    if not bot.get_cog("SecurityHeartbeat"):
-        await bot.add_cog(SecurityHeartbeat(bot))
-    print(f"🕶️ E.D.I.T.H. Sovereignty Protocol v14.0 Engaged.")
 
 bot.run(TOKEN)
