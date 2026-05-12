@@ -1,12 +1,12 @@
-import os, discord, sqlite3, datetime, flask, sys
+import os, discord, sqlite3, datetime, flask
 from discord.ext import commands
+from discord import app_commands
 from threading import Thread
 
 # --- DATABASE & STORAGE ---
 db = sqlite3.connect('edith_mainframe.db')
 cursor = db.cursor()
 cursor.execute('CREATE TABLE IF NOT EXISTS storage (key TEXT PRIMARY KEY, content TEXT)')
-cursor.execute('CREATE TABLE IF NOT EXISTS restart_check (channel_id BIGINT)')
 db.commit()
 
 # --- UPTIME SERVICE (PORT 8080) ---
@@ -21,8 +21,17 @@ TOKEN = os.environ.get('TOKEN')
 OWNER_ID = 1219266886143967245 
 ROLE_NAME = "New Comer"
 
-intents = discord.Intents.all()
-bot = commands.Bot(command_prefix='!', intents=intents, case_insensitive=True)
+class EdithBot(commands.Bot):
+    def __init__(self):
+        intents = discord.Intents.all()
+        super().__init__(command_prefix='!', intents=intents, case_insensitive=True)
+
+    async def setup_hook(self):
+        # Syncing slash commands globally
+        await self.tree.sync()
+        print("🛰️ Global Slash Commands Synced.")
+
+bot = EdithBot()
 
 # --- 🔒 SOVEREIGNTY CHECK ---
 @bot.check
@@ -42,65 +51,25 @@ class EntryProtocol(discord.ui.View):
             await self.member.add_roles(role)
             await interaction.response.edit_message(content=f"✅ **{self.member.name}** verified.", view=None)
         else:
-            await interaction.response.send_message("❌ Error: Role missing.", ephemeral=True)
+            await interaction.response.send_message(f"❌ Role '{ROLE_NAME}' not found.", ephemeral=True)
 
     @discord.ui.button(label="EJECT TARGET", style=discord.ButtonStyle.red, emoji="🚫")
     async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.member.kick(reason="Mainframe entry denied.")
         await interaction.response.edit_message(content=f"🚫 **{self.member.name}** ejected.", view=None)
 
-# --- ⚙️ SELF-REWRITE ENGINE ---
-@bot.command()
-async def cc(ctx, key: str, *, info: str):
-    """Rewrites main.py and pings back when ready"""
-    key = key.lower().replace("!", "").strip().replace("-", "_")
-    
-    # Check for core command conflicts
-    if bot.get_command(key):
-        return await ctx.send(f"⚠️ **Conflict:** `{key}` is a core system command.")
-
-    if "server information" in info.lower() or "gather server" in info.lower():
-        logic = '    g = ctx.guild\n    await ctx.send(f"**Mainframe Report**\\nServer: {g.name}\\nMembers: {g.member_count}\\nOwner: {g.owner}")'
-    else:
-        logic = f'    await ctx.send("{info}")'
-
-    # Append to a specialized 'Custom' section at the very end
-    new_cmd_code = f"\n\n@bot.command(name='{key}')\nasync def custom_{key}(ctx):\n{logic}"
-    
-    cursor.execute("DELETE FROM restart_check")
-    cursor.execute("INSERT INTO restart_check VALUES (?)", (ctx.channel.id,))
-    db.commit()
-
-    with open(__file__, "a") as f:
-        f.write(new_cmd_code)
-    
-    await ctx.send(f"🧬 **Synthesizing logic for `!{key}`...** Rebooting.")
-    os.execv(sys.executable, ['python'] + sys.argv)
-
-@bot.command()
-async def ccl(ctx):
-    """Lists all custom commands added via !cc"""
-    # This searches the current file for custom-prefixed functions
-    with open(__file__, "r") as f:
-        code = f.read()
-    found = [f"!{m}" for m in sorted(set(re.findall(r"@bot\.command\(name='([^']+)'\)", code))) if m not in ['ping', 'setup', 'cmds', 'cc', 'ccr', 'ccl', 'store', 'storage']]
-    
-    embed = discord.Embed(title="🧬 CUSTOM COMMAND ARCHIVE", description="\n".join(found) if found else "No custom logic detected.", color=0x9b59b6)
-    await ctx.send(embed=embed)
-
-@bot.command()
-async def cmds(ctx):
-    """The central command manifest"""
-    embed = discord.Embed(title="🕶️ E.D.I.T.H. MANIFEST", color=0x2b2d31)
-    embed.add_field(name="🛡️ CORE", value="`!setup`, `!ping`, `!cmds`", inline=True)
-    embed.add_field(name="🧬 ARCHITECT", value="`!cc`, `!ccr`, `!ccl`", inline=True)
-    embed.add_field(name="📦 STORAGE", value="`!store`, `!storage`", inline=False)
-    await ctx.send(embed=embed)
-
-# --- 🛰️ CORE SYSTEM ---
+# --- 🛠️ SYSTEM COMMANDS ---
 @bot.command()
 async def ping(ctx):
     await ctx.send(f"🛰️ **Signal:** {round(bot.latency * 1000)}ms | **Port 8080:** Open")
+
+@bot.command()
+async def cmds(ctx):
+    embed = discord.Embed(title="🕶️ E.D.I.T.H. MANIFEST", color=0x2b2d31)
+    embed.add_field(name="🛡️ CORE", value="`!setup`, `!ping`, `!cmds`", inline=True)
+    embed.add_field(name="📦 STORAGE", value="`!store`, `!storage`, `!unstore`, `!delete`", inline=True)
+    embed.add_field(name="📊 ANALYSIS", value="`/server-info`", inline=False)
+    await ctx.send(embed=embed)
 
 @bot.command()
 async def setup(ctx):
@@ -108,7 +77,21 @@ async def setup(ctx):
                   ctx.author: discord.PermissionOverwrite(read_messages=True)}
     gate = await ctx.guild.create_text_channel('entry-gate', overwrites=overwrites)
     logs = await ctx.guild.create_text_channel('war-room', overwrites=overwrites)
-    await ctx.send(f"✅ **Sectors Established.** Gate: {gate.mention} | Logs: {logs.mention}")
+    await ctx.send(f"✅ **Sectors Online.**\nGate: {gate.mention} (Pings arrive here)\nWar Room: {logs.mention} (Logs arrive here)")
+
+# --- 📊 SLASH COMMANDS ---
+@bot.tree.command(name="server-info", description="Gathers high-level server intelligence")
+async def server_info(interaction: discord.Interaction):
+    if interaction.user.id != OWNER_ID:
+        return await interaction.response.send_message("❌ **Unauthorized.** Biometric mismatch.", ephemeral=True)
+    
+    g = interaction.guild
+    embed = discord.Embed(title=f"📊 INTELLIGENCE REPORT: {g.name}", color=0x00ffff)
+    embed.add_field(name="Identity", value=f"ID: `{g.id}`\nOwner: {g.owner}", inline=False)
+    embed.add_field(name="Population", value=f"Total: {g.member_count}\nRoles: {len(g.roles)}", inline=True)
+    embed.add_field(name="Infrastructure", value=f"Channels: {len(g.channels)}\nBoosts: {g.premium_subscription_count}", inline=True)
+    embed.set_thumbnail(url=g.icon.url if g.icon else None)
+    await interaction.response.send_message(embed=embed)
 
 # --- 📦 STORAGE ---
 @bot.command()
@@ -117,25 +100,41 @@ async def store(ctx, k, *, v):
     db.commit()
     await ctx.send(f"💾 **Archived:** `{k}`")
 
-# --- 🚨 EVENTS ---
-@bot.event
-async def on_ready():
-    print(f"🕶️ E.D.I.T.H. Online.")
-    cursor.execute("SELECT channel_id FROM restart_check")
-    res = cursor.fetchone()
-    if res:
-        channel = bot.get_channel(res[0])
-        if channel: await channel.send("🛰️ **Mainframe Secure.** Missing commands `!cmds` and `!ccl` have been restored.")
-        cursor.execute("DELETE FROM restart_check")
-        db.commit()
+@bot.command()
+async def storage(ctx):
+    cursor.execute("SELECT key FROM storage")
+    res = cursor.fetchall()
+    keys = "\n".join([f"• {r[0]}" for r in res]) if res else "Empty."
+    await ctx.send(embed=discord.Embed(title="🗄️ STORAGE", description=keys, color=0x3498db))
+
+# --- 🚨 OMNISCIENCE LOGGING ---
+async def log_event(guild, embed):
+    channel = discord.utils.get(guild.text_channels, name="war-room")
+    if channel: await channel.send(embed=embed)
 
 @bot.event
 async def on_member_join(member):
     gate = discord.utils.get(member.guild.text_channels, name="entry-gate")
-    if gate: await gate.send(content=f"🚨 <@{OWNER_ID}> — **2FA REQUIRED**", view=EntryProtocol(member))
+    if gate:
+        await gate.send(content=f"🚨 <@{OWNER_ID}> — **2FA REQUIRED** for {member.mention}", view=EntryProtocol(member))
+
+@bot.event
+async def on_bulk_message_delete(messages):
+    embed = discord.Embed(title="🧹 MASS PURGE DETECTED (JARVIS/SYSTEM)", color=0x000000)
+    embed.description = f"**{len(messages)}** messages wiped in {messages[0].channel.mention}."
+    await log_event(messages[0].guild, embed)
+
+@bot.event
+async def on_guild_update(before, after):
+    embed = discord.Embed(title="⚙️ SERVER MODIFICATION", color=0xffff00)
+    if before.name != after.name: embed.add_field(name="Name Change", value=f"{before.name} ➡️ {after.name}")
+    await log_event(after, embed)
+
+@bot.event
+async def on_ready():
+    print(f"🕶️ E.D.I.T.H. Online and Secure.")
 
 # --- START ---
 if __name__ == "__main__":
-    import re
     keep_alive()
     bot.run(TOKEN)
