@@ -55,15 +55,18 @@ async def cc(ctx, key: str, *, info: str):
     """Rewrites main.py and pings back when ready"""
     key = key.lower().replace("!", "").strip().replace("-", "_")
     
-    # Process specialized logic
+    # Check for core command conflicts
+    if bot.get_command(key):
+        return await ctx.send(f"⚠️ **Conflict:** `{key}` is a core system command.")
+
     if "server information" in info.lower() or "gather server" in info.lower():
         logic = '    g = ctx.guild\n    await ctx.send(f"**Mainframe Report**\\nServer: {g.name}\\nMembers: {g.member_count}\\nOwner: {g.owner}")'
     else:
         logic = f'    await ctx.send("{info}")'
 
+    # Append to a specialized 'Custom' section at the very end
     new_cmd_code = f"\n\n@bot.command(name='{key}')\nasync def custom_{key}(ctx):\n{logic}"
     
-    # Store channel ID to ping back after restart
     cursor.execute("DELETE FROM restart_check")
     cursor.execute("INSERT INTO restart_check VALUES (?)", (ctx.channel.id,))
     db.commit()
@@ -71,31 +74,30 @@ async def cc(ctx, key: str, *, info: str):
     with open(__file__, "a") as f:
         f.write(new_cmd_code)
     
-    await ctx.send(f"🧬 **Synthesizing logic for `!{key}`...** System rebooting.")
+    await ctx.send(f"🧬 **Synthesizing logic for `!{key}`...** Rebooting.")
     os.execv(sys.executable, ['python'] + sys.argv)
 
 @bot.command()
-async def ccr(ctx, key: str):
-    """Scrub custom command from source"""
-    key = key.lower().strip().replace("-", "_")
+async def ccl(ctx):
+    """Lists all custom commands added via !cc"""
+    # This searches the current file for custom-prefixed functions
     with open(__file__, "r") as f:
-        lines = f.readlines()
+        code = f.read()
+    found = [f"!{m}" for m in sorted(set(re.findall(r"@bot\.command\(name='([^']+)'\)", code))) if m not in ['ping', 'setup', 'cmds', 'cc', 'ccr', 'ccl', 'store', 'storage']]
     
-    with open(__file__, "w") as f:
-        skip = False
-        for line in lines:
-            if f"@bot.command(name='{key}')" in line:
-                skip = True
-                continue
-            if skip and (line.startswith("@bot.command") or line.startswith("# --- START ---")):
-                skip = False
-            if not skip:
-                f.write(line)
-    
-    await ctx.send(f"🗑️ **Scrubbing `!{key}`...** System rebooting.")
-    os.execv(sys.executable, ['python'] + sys.argv)
+    embed = discord.Embed(title="🧬 CUSTOM COMMAND ARCHIVE", description="\n".join(found) if found else "No custom logic detected.", color=0x9b59b6)
+    await ctx.send(embed=embed)
 
-# --- 🛰️ CORE COMMANDS ---
+@bot.command()
+async def cmds(ctx):
+    """The central command manifest"""
+    embed = discord.Embed(title="🕶️ E.D.I.T.H. MANIFEST", color=0x2b2d31)
+    embed.add_field(name="🛡️ CORE", value="`!setup`, `!ping`, `!cmds`", inline=True)
+    embed.add_field(name="🧬 ARCHITECT", value="`!cc`, `!ccr`, `!ccl`", inline=True)
+    embed.add_field(name="📦 STORAGE", value="`!store`, `!storage`", inline=False)
+    await ctx.send(embed=embed)
+
+# --- 🛰️ CORE SYSTEM ---
 @bot.command()
 async def ping(ctx):
     await ctx.send(f"🛰️ **Signal:** {round(bot.latency * 1000)}ms | **Port 8080:** Open")
@@ -106,7 +108,7 @@ async def setup(ctx):
                   ctx.author: discord.PermissionOverwrite(read_messages=True)}
     gate = await ctx.guild.create_text_channel('entry-gate', overwrites=overwrites)
     logs = await ctx.guild.create_text_channel('war-room', overwrites=overwrites)
-    await ctx.send(f"✅ **Sectors Online.** Gate: {gate.mention} | Logs: {logs.mention}")
+    await ctx.send(f"✅ **Sectors Established.** Gate: {gate.mention} | Logs: {logs.mention}")
 
 # --- 📦 STORAGE ---
 @bot.command()
@@ -115,33 +117,25 @@ async def store(ctx, k, *, v):
     db.commit()
     await ctx.send(f"💾 **Archived:** `{k}`")
 
-# --- 🚨 OMNISCIENCE LOGS ---
+# --- 🚨 EVENTS ---
 @bot.event
 async def on_ready():
     print(f"🕶️ E.D.I.T.H. Online.")
-    # Check if we just restarted from a custom command injection
     cursor.execute("SELECT channel_id FROM restart_check")
     res = cursor.fetchone()
     if res:
         channel = bot.get_channel(res[0])
-        if channel:
-            await channel.send("🛰️ **Mainframe Updated.** All systems are ready and the new command is online.")
+        if channel: await channel.send("🛰️ **Mainframe Secure.** Missing commands `!cmds` and `!ccl` have been restored.")
         cursor.execute("DELETE FROM restart_check")
         db.commit()
 
 @bot.event
 async def on_member_join(member):
     gate = discord.utils.get(member.guild.text_channels, name="entry-gate")
-    if gate:
-        await gate.send(content=f"🚨 <@{OWNER_ID}> — **2FA REQUIRED**", view=EntryProtocol(member))
-
-@bot.event
-async def on_bulk_message_delete(messages):
-    logs = discord.utils.get(messages[0].guild.text_channels, name="war-room")
-    if logs:
-        await logs.send(f"🧹 **MASS PURGE:** {len(messages)} messages wiped in {messages[0].channel.mention}.")
+    if gate: await gate.send(content=f"🚨 <@{OWNER_ID}> — **2FA REQUIRED**", view=EntryProtocol(member))
 
 # --- START ---
 if __name__ == "__main__":
+    import re
     keep_alive()
     bot.run(TOKEN)
