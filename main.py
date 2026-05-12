@@ -1,5 +1,5 @@
-import os, discord, sqlite3, datetime, flask
-from discord.ext import commands
+import os, discord, sqlite3, flask
+from discord.ext import commands, tasks
 from discord import app_commands
 from threading import Thread
 
@@ -12,24 +12,25 @@ db.commit()
 # --- UPTIME SERVICE (PORT 8080) ---
 app = flask.Flask('')
 @app.route('/')
-def home(): return "E.D.I.T.H. Mainframe: Online"
+def home(): return "E.D.I.T.H. Mainframe: Secure"
 def run(): app.run(host='0.0.0.0', port=8080)
 def keep_alive(): Thread(target=run).start()
 
 # --- CONFIGURATION ---
 TOKEN = os.environ.get('TOKEN')
-OWNER_ID = 1219266886143967245 
+OWNER_ID = 1219266886143967245 #
 ROLE_NAME = "New Comer"
 
 class EdithBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.all()
         super().__init__(command_prefix='!', intents=intents, case_insensitive=True)
+        self.lockdown_active = False
 
     async def setup_hook(self):
-        # Syncing slash commands globally
         await self.tree.sync()
-        print("🛰️ Global Slash Commands Synced.")
+        self.lockdown_monitor.start()
+        print("🛰️ Global Slash Commands & Lockdown Monitor Active.")
 
 bot = EdithBot()
 
@@ -51,7 +52,7 @@ class EntryProtocol(discord.ui.View):
             await self.member.add_roles(role)
             await interaction.response.edit_message(content=f"✅ **{self.member.name}** verified.", view=None)
         else:
-            await interaction.response.send_message(f"❌ Role '{ROLE_NAME}' not found.", ephemeral=True)
+            await interaction.response.send_message(f"❌ Role '{ROLE_NAME}' missing.", ephemeral=True)
 
     @discord.ui.button(label="EJECT TARGET", style=discord.ButtonStyle.red, emoji="🚫")
     async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -77,21 +78,7 @@ async def setup(ctx):
                   ctx.author: discord.PermissionOverwrite(read_messages=True)}
     gate = await ctx.guild.create_text_channel('entry-gate', overwrites=overwrites)
     logs = await ctx.guild.create_text_channel('war-room', overwrites=overwrites)
-    await ctx.send(f"✅ **Sectors Online.**\nGate: {gate.mention} (Pings arrive here)\nWar Room: {logs.mention} (Logs arrive here)")
-
-# --- 📊 SLASH COMMANDS ---
-@bot.tree.command(name="server-info", description="Gathers high-level server intelligence")
-async def server_info(interaction: discord.Interaction):
-    if interaction.user.id != OWNER_ID:
-        return await interaction.response.send_message("❌ **Unauthorized.** Biometric mismatch.", ephemeral=True)
-    
-    g = interaction.guild
-    embed = discord.Embed(title=f"📊 INTELLIGENCE REPORT: {g.name}", color=0x00ffff)
-    embed.add_field(name="Identity", value=f"ID: `{g.id}`\nOwner: {g.owner}", inline=False)
-    embed.add_field(name="Population", value=f"Total: {g.member_count}\nRoles: {len(g.roles)}", inline=True)
-    embed.add_field(name="Infrastructure", value=f"Channels: {len(g.channels)}\nBoosts: {g.premium_subscription_count}", inline=True)
-    embed.set_thumbnail(url=g.icon.url if g.icon else None)
-    await interaction.response.send_message(embed=embed)
+    await ctx.send(f"✅ **Sectors Established.**\nGate: {gate.mention} (2FA)\nWar Room: {logs.mention} (Logs)")
 
 # --- 📦 STORAGE ---
 @bot.command()
@@ -101,40 +88,70 @@ async def store(ctx, k, *, v):
     await ctx.send(f"💾 **Archived:** `{k}`")
 
 @bot.command()
+async def unstore(ctx, k):
+    cursor.execute("SELECT content FROM storage WHERE key=?", (k.lower(),))
+    res = cursor.fetchone()
+    if res: await ctx.send(f"📦 **Data:** `{res[0]}`")
+    else: await ctx.send("❌ Not found.")
+
+@bot.command()
 async def storage(ctx):
     cursor.execute("SELECT key FROM storage")
     res = cursor.fetchall()
     keys = "\n".join([f"• {r[0]}" for r in res]) if res else "Empty."
     await ctx.send(embed=discord.Embed(title="🗄️ STORAGE", description=keys, color=0x3498db))
 
-# --- 🚨 OMNISCIENCE LOGGING ---
-async def log_event(guild, embed):
-    channel = discord.utils.get(guild.text_channels, name="war-room")
-    if channel: await channel.send(embed=embed)
+@bot.command()
+async def delete(ctx, k):
+    cursor.execute("DELETE FROM storage WHERE key=?", (k.lower(),))
+    db.commit()
+    await ctx.send(f"🗑️ Purged: `{k}`")
 
+# --- 📊 SLASH COMMANDS ---
+@bot.tree.command(name="server-info", description="Gathers high-level server intelligence")
+async def server_info(interaction: discord.Interaction):
+    if interaction.user.id != OWNER_ID: return
+    g = interaction.guild
+    embed = discord.Embed(title=f"📊 INTELLIGENCE: {g.name}", color=0x00ffff)
+    embed.add_field(name="Identity", value=f"ID: `{g.id}`\nOwner: {g.owner}", inline=False)
+    embed.add_field(name="Population", value=f"Total: {g.member_count}", inline=True)
+    embed.set_thumbnail(url=g.icon.url if g.icon else None)
+    await interaction.response.send_message(embed=embed)
+
+# --- 🔐 LOCKDOWN SYSTEM ---
+@tasks.loop(seconds=60)
+async def lockdown_monitor():
+    for guild in bot.guilds:
+        owner = guild.get_member(OWNER_ID)
+        if owner and owner.status == discord.Status.offline and not bot.lockdown_active:
+            bot.lockdown_active = True
+            for channel in guild.text_channels:
+                await channel.set_permissions(guild.default_role, send_messages=False)
+            print(f"🔒 Lockdown engaged in {guild.name}.")
+        elif owner and owner.status != discord.Status.offline and bot.lockdown_active:
+            bot.lockdown_active = False
+            for channel in guild.text_channels:
+                await channel.set_permissions(guild.default_role, send_messages=None)
+            print(f"🔓 Lockdown lifted in {guild.name}.")
+
+# --- 🚨 LOGGING ---
 @bot.event
 async def on_member_join(member):
     gate = discord.utils.get(member.guild.text_channels, name="entry-gate")
     if gate:
-        await gate.send(content=f"🚨 <@{OWNER_ID}> — **2FA REQUIRED** for {member.mention}", view=EntryProtocol(member))
+        await gate.send(content=f"🚨 <@{OWNER_ID}> — **2FA REQUIRED**", view=EntryProtocol(member))
 
 @bot.event
 async def on_bulk_message_delete(messages):
-    embed = discord.Embed(title="🧹 MASS PURGE DETECTED (JARVIS/SYSTEM)", color=0x000000)
-    embed.description = f"**{len(messages)}** messages wiped in {messages[0].channel.mention}."
-    await log_event(messages[0].guild, embed)
+    logs = discord.utils.get(messages[0].guild.text_channels, name="war-room")
+    if logs:
+        await logs.send(embed=discord.Embed(title="🧹 MASS PURGE", description=f"{len(messages)} wiped in {messages[0].channel.mention}", color=0x000000))
 
 @bot.event
 async def on_guild_update(before, after):
-    embed = discord.Embed(title="⚙️ SERVER MODIFICATION", color=0xffff00)
-    if before.name != after.name: embed.add_field(name="Name Change", value=f"{before.name} ➡️ {after.name}")
-    await log_event(after, embed)
+    logs = discord.utils.get(after.text_channels, name="war-room")
+    if logs: await logs.send(embed=discord.Embed(title="⚙️ SETTINGS UPDATED", color=0xffff00))
 
-@bot.event
-async def on_ready():
-    print(f"🕶️ E.D.I.T.H. Online and Secure.")
-
-# --- START ---
 if __name__ == "__main__":
     keep_alive()
     bot.run(TOKEN)
