@@ -74,8 +74,12 @@ async def cmds(ctx):
 
 @bot.command()
 async def setup(ctx):
-    overwrites = {ctx.guild.default_role: discord.PermissionOverwrite(read_messages=False),
-                  ctx.author: discord.PermissionOverwrite(read_messages=True)}
+    # Setup private channels for Owner and Bot only
+    overwrites = {
+        ctx.guild.default_role: discord.PermissionOverwrite(read_messages=False),
+        ctx.author: discord.PermissionOverwrite(read_messages=True, send_messages=True),
+        ctx.guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True)
+    }
     gate = await ctx.guild.create_text_channel('entry-gate', overwrites=overwrites)
     logs = await ctx.guild.create_text_channel('war-room', overwrites=overwrites)
     
@@ -110,31 +114,35 @@ async def delete(ctx, k):
     db.commit()
     await ctx.send(f"🗑️ Purged: `{k}`")
 
-# --- 🔐 3-SECOND LOCKDOWN ---
+# --- 🔐 3-SECOND LOCKDOWN (@everyone send_messages) ---
 @tasks.loop(seconds=3)
 async def lockdown_monitor():
     for guild in bot.guilds:
         owner = guild.get_member(OWNER_ID)
         if not owner: continue
         
-        is_offline = owner.status == discord.Status.offline
+        is_offline = (owner.status == discord.Status.offline)
         
         if is_offline and not bot.lockdown_active:
             bot.lockdown_active = True
             for channel in guild.text_channels:
+                # Explicitly target @everyone role permission
                 await channel.set_permissions(guild.default_role, send_messages=False)
-            print(f"🔒 Lockdown engaged: Owner Offline.")
+            print(f"🔒 Lockdown engaged: {guild.name}")
+            
         elif not is_offline and bot.lockdown_active:
             bot.lockdown_active = False
             for channel in guild.text_channels:
+                # Reset @everyone role permission
                 await channel.set_permissions(guild.default_role, send_messages=None)
-            print(f"🔓 Lockdown lifted: Owner Online.")
+            print(f"🔓 Lockdown lifted: {guild.name}")
 
 # --- 🚨 LOGGING & EVENTS ---
 @bot.event
 async def on_member_join(member):
     gate = discord.utils.get(member.guild.text_channels, name="entry-gate")
     if gate:
+        # Pings you via Webhook style message
         await gate.send(content=f"🚨 <@{OWNER_ID}> — **NEW COMER REQUEST**", view=EntryProtocol(member))
 
 @bot.event
@@ -157,8 +165,8 @@ async def server_info(interaction: discord.Interaction):
     if interaction.user.id != OWNER_ID: return
     g = interaction.guild
     embed = discord.Embed(title=f"📊 INTELLIGENCE: {g.name}", color=0x00ffff)
-    embed.add_field(name="Population", value=f"Total: {g.member_count}", inline=True)
     embed.add_field(name="Infrastructure", value=f"Channels: {len(g.channels)}\nRoles: {len(g.roles)}", inline=True)
+    embed.add_field(name="Security", value=f"Verification: {g.verification_level}", inline=True)
     embed.set_thumbnail(url=g.icon.url if g.icon else None)
     await interaction.response.send_message(embed=embed)
 
