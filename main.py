@@ -1,13 +1,13 @@
 import discord
 from discord.ext import commands
-from keep_alive import keep_alive  # Imports your Flask web server script
+import os  # CRITICAL: Fixes the 401 crash by loading variables from Render's environment
+from keep_alive import keep_alive  # Imports your rebranded Flask web server
 
 class FroggyBot(commands.Bot):
     def __init__(self):
-        # Setting up standard intents
         intents = discord.Intents.default()
         
-        # CRITICAL: This MUST be True so Froggy can actively read the text channels 
+        # CRITICAL: This MUST be True so Froggy can actively read text channels
         # to process user guesses whenever a wild frog spawns!
         intents.message_content = True  
         
@@ -17,7 +17,7 @@ class FroggyBot(commands.Bot):
         # Automatically registers and loads your game engine (froggy.py) on startup
         await self.load_extension("froggy")
         
-        # Syncs slash commands globally (/slots, /coinflip, /bal)
+        # Syncs slash commands globally (/slots, /coinflip, /bal, /forcespawn)
         await self.tree.sync()
 
     async def on_ready(self):
@@ -29,6 +29,11 @@ if __name__ == "__main__":
     # 1. Fire up the Flask web service thread first to handle cronjob ping configurations
     keep_alive()  
     
-    # 2. Authenticate and hand off execution control to the Discord pipeline
-    # ⚠️ Replace this string with your actual secret Token from the Discord Developer Portal!
-    bot.run("YOUR_BOT_TOKEN")
+    # 2. Extract the hidden token securely from Render's Environment settings
+    token = os.getenv("DISCORD_TOKEN")
+    
+    if not token:
+        print("❌ CRITICAL ERROR: Could not find 'DISCORD_TOKEN' in your Render Environment Variables dashboard, g.")
+    else:
+        # 3. Securely pass the extracted token directly to the Discord engine
+        bot.run(token)
