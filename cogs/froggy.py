@@ -274,3 +274,40 @@ class FroggyGame(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(FroggyGame(bot))
+    # --- ADMIN-ONLY TEST SPAWNER ---
+    @app_commands.command(name="forcespawn", description="[ADMIN] Instantly force-spawn a frog to test the guessing engine")
+    @app_commands.checks.has_permissions(administrator=True) # Restricts the command to server admins
+    async def force_spawn_test(self, interaction: discord.Interaction):
+        if not self.target_channel_id:
+            return await interaction.response.send_message("❌ Channel setup isn't complete yet, g. Wait for the bot to be fully ready.", ephemeral=True)
+
+        channel = self.bot.get_channel(self.target_channel_id)
+        if not channel:
+            return await interaction.response.send_message("❌ Could not locate the #frog-catch channel.", ephemeral=True)
+
+        # Acknowledge the command privately so it doesn't mess up the chat arena
+        await interaction.response.send_message("🪄 Force-spawning a test frog event...", ephemeral=True)
+
+        # Pick a random frog out of your BOSS database for the test
+        frog_data = random.choice(BOSS_FROGS)
+        tier = frog_data["tier"]
+        reward = frog_data["reward"]
+        img_url = frog_data["image"]
+        
+        # Set the active spawn tracking data manually
+        active_spawn[channel.id] = {
+            "answers": frog_data["names"],
+            "display": frog_data["display"],
+            "tier": tier,
+            "reward": reward
+        }
+        
+        tier_colors = {"Common": 0x2ecc71, "Rare": 0x3498db, "Legendary": 0x9b59b6}
+        
+        embed = discord.Embed(
+            title=f"🚨 [TEST] DYNAMIC {tier.upper()} SPAWN", 
+            description=f"**ADMIN FORCE-SPAWN ACTIVATED!**\nType the frog's name straight into this channel to test the listener!", 
+            color=tier_colors.get(tier, 0x2ecc71)
+        )
+        embed.set_image(url=img_url)
+        await channel.send(embed=embed)
