@@ -1,6 +1,2 @@
-
-
-discord-py
-flask
-openai
-requests
+discord.py>=2.3.0
+Flask>=3.0.0
