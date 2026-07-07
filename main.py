@@ -1,11 +1,10 @@
-```python
 import os
 import sqlite3
 import datetime
 import discord
 from discord import app_commands
 from discord.ext import commands
-from keep_alive import keep_alive  # Flask free-tier keep awake engine helper
+from keep_alive import keep_alive
 
 # ==========================================================
 # ADVANCED PERSISTENT STORAGE MANAGEMENT (SQLite)
@@ -13,7 +12,6 @@ from keep_alive import keep_alive  # Flask free-tier keep awake engine helper
 DB_FILE = "tripwire_advanced.db"
 
 def init_db():
-    """Initializes a local database to remember settings across server restarts."""
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute('''
@@ -34,7 +32,6 @@ def init_db():
     conn.close()
 
 def save_advanced_settings(guild_id, channel_name, channel_id, log_channel_id, action, timeout_hours, mute_role_id, visibility, exempt_role_id, notify_offender):
-    """Saves or updates the advanced security configuration parameters inside local storage."""
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute('''
@@ -45,7 +42,6 @@ def save_advanced_settings(guild_id, channel_name, channel_id, log_channel_id, a
     conn.close()
 
 def get_advanced_settings(guild_id):
-    """Fetches custom rules assigned to the current server context."""
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute('SELECT channel_name, channel_id, log_channel_id, action, timeout_hours, mute_role_id, visibility, exempt_role_id, notify_offender FROM settings WHERE guild_id = ?', (guild_id,))
@@ -58,15 +54,14 @@ def get_advanced_settings(guild_id):
         }
     return None
 
-# Initialize local database file immediately on script boot
 init_db()
 
 # ==========================================================
 # SECURITY CORE SUBSYSTEM
 # ==========================================================
 intents = discord.Intents.default()
-intents.message_content = True  # Required to look inside message strings hitting tripwires
-intents.members = True          # Required to perform actions (kick, ban, timeout, role assignments) on accounts
+intents.message_content = True  
+intents.members = True          
 
 bot = commands.Bot(command_prefix="/", intents=intents)
 
@@ -74,7 +69,6 @@ bot = commands.Bot(command_prefix="/", intents=intents)
 async def on_ready():
     print(f"🛡️ Tripwire Custom Core Running: {bot.user}")
     try:
-        # Syncs slash choices globally across Discord infrastructure
         await bot.tree.sync()
         print("🔄 Universal security options synced globally.")
     except Exception as e:
@@ -125,7 +119,6 @@ async def setup_advanced_tripwire(
     custom_body: str = None
 ):
     guild = interaction.guild
-    # Defer interaction window to avoid "Interaction Failed" errors due to multiple API calls
     await interaction.response.defer(ephemeral=True)
 
     clean_channel_name = channel_name.strip().lower().replace(" ", "-")
@@ -140,7 +133,7 @@ async def setup_advanced_tripwire(
             try:
                 await channel.delete(reason="Tripwire Configuration Wipe")
             except discord.Forbidden:
-                return await interaction.followup.send(f"❌ Permission Failure: Bot cannot clear old channel variations.", ephemeral=True)
+                return await interaction.followup.send("❌ Permission Failure: Bot cannot clear old channel variations.", ephemeral=True)
 
     # 2. Build Strict Trap Channel Permission Masks
     is_public = (chosen_visibility == "public")
@@ -158,10 +151,10 @@ async def setup_advanced_tripwire(
 
     # 4. Create the Strictly Private Log Channel (Only Owner, Exempt Role, and Bot can view)
     log_overwrites = {
-        guild.default_role: discord.PermissionOverwrite(view_channel=False),  # Block everyone else
+        guild.default_role: discord.PermissionOverwrite(view_channel=False),  
         guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True),
         exempt_role: discord.PermissionOverwrite(view_channel=True, send_messages=True),
-        guild.owner: discord.PermissionOverwrite(view_channel=True, send_messages=True)  # Server owner always allowed
+        guild.owner: discord.PermissionOverwrite(view_channel=True, send_messages=True)  
     }
 
     try:
@@ -203,13 +196,11 @@ async def setup_advanced_tripwire(
 
     await interaction.followup.send(f"✅ Tripwire active! Trap: {new_channel.mention} | Private Logs: {log_channel.mention}", ephemeral=True)
 
-
 # ==========================================================
 # MITIGATION EVENT RADAR LOOP
 # ==========================================================
 @bot.event
 async def on_message(message: discord.Message):
-    # Security Bypass: Ignore other bots, system hooks, or standard DMs straight to this bot
     if message.author.bot or not message.guild:
         return
 
@@ -230,7 +221,7 @@ async def on_message(message: discord.Message):
         config["exempt_role_id"] in [role.id for role in offender.roles]):
         return
 
-    violation_reason = f"Tripwire Intrusion: Message posted inside trap channel `#{config['channel_name']}`"
+    violation_reason = f"Tripwire Intrusion: Unauthorized message posted inside trap channel `#{config['channel_name']}`"
 
     try:
         # 1. Instantly delete the payload text
@@ -241,7 +232,7 @@ async def on_message(message: discord.Message):
             try:
                 await offender.send(f"⚠️ **Security Notice:** You have been automatically moderated in **{message.guild.name}** for typing in a restricted system trap channel.")
             except discord.Forbidden:
-                pass  # Handled if the user has direct messages closed
+                pass
 
         # 3. Process Custom Advanced Punishments
         action_type = config["action"]
@@ -250,7 +241,6 @@ async def on_message(message: discord.Message):
             await message.guild.ban(offender, reason=violation_reason, delete_message_days=1)
         
         elif action_type == "softban":
-            # Ban + instantly unban (effectively kicks them and wipes all their message history from the last 24h)
             await message.guild.ban(offender, reason=f"[SOFTBAN] {violation_reason}", delete_message_days=1)
             await message.guild.unban(offender, reason="Softban cycle complete.")
         
@@ -278,4 +268,3 @@ async def on_message(message: discord.Message):
             report.add_field(name="Enforcement Action", value=f"`{action_type.upper()}`", inline=True)
             report.add_field(name="Captured Content", value=f"
 
-```
