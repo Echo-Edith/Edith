@@ -4,196 +4,258 @@ import datetime
 import discord
 from discord import app_commands
 from discord.ext import commands
-from keep_alive import keep_alive  # Imports the Render web server helper
+from keep_alive import keep_alive
 
 # ==========================================================
-# PERSISTENT STORAGE MANAGEMENT (SQLite)
+# ADVANCED PERSISTENT STORAGE MANAGEMENT (SQLite)
 # ==========================================================
-DB_FILE = "tripwire_data.db"
+DB_FILE = "tripwire_advanced.db"
 
 def init_db():
-    """Initializes a local database to remember settings across server restarts."""
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS settings (
             guild_id INTEGER PRIMARY KEY,
+            channel_name TEXT,
             channel_id INTEGER,
             action TEXT,
-            dummy_id INTEGER
+            timeout_hours INTEGER,
+            dummy_id INTEGER,
+            log_channel_id INTEGER,
+            visibility TEXT,
+            exempt_role_id INTEGER,
+            notify_offender INTEGER
         )
     ''')
     conn.commit()
     conn.close()
 
-def save_guild_settings(guild_id, channel_id, action, dummy_id):
+def save_advanced_settings(guild_id, channel_name, channel_id, action, timeout_hours, dummy_id, log_channel_id, visibility, exempt_role_id, notify_offender):
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute('''
-        INSERT OR REPLACE INTO settings (guild_id, channel_id, action, dummy_id)
-        VALUES (?, ?, ?, ?)
-    ''', (guild_id, channel_id, action, dummy_id))
+        INSERT OR REPLACE INTO settings (guild_id, channel_name, channel_id, action, timeout_hours, dummy_id, log_channel_id, visibility, exempt_role_id, notify_offender)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (guild_id, channel_name, channel_id, action, timeout_hours, dummy_id, log_channel_id, visibility, exempt_role_id, notify_offender))
     conn.commit()
     conn.close()
 
-def get_guild_settings(guild_id):
+def get_advanced_settings(guild_id):
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    cursor.execute('SELECT channel_id, action, dummy_id FROM settings WHERE guild_id = ?', (guild_id,))
+    cursor.execute('SELECT channel_name, channel_id, action, timeout_hours, dummy_id, log_channel_id, visibility, exempt_role_id, notify_offender FROM settings WHERE guild_id = ?', (guild_id,))
     row = cursor.fetchone()
     conn.close()
     if row:
-        return {"channel_id": row[0], "action": row[1], "dummy_id": row[2]}
+        return {
+            "channel_name": row[0], "channel_id": row[1], "action": row[2],
+            "timeout_hours": row[3], "dummy_id": row[4], "log_channel_id": row[5],
+            "visibility": row[6], "exempt_role_id": row[7], "notify_offender": row[8]
+        }
     return None
 
-# Initialize local file database registry
 init_db()
 
 # ==========================================================
-# CORE SECURITY ENGINE & COMMANDS
+# SECURITY CORE SUBSYSTEM
 # ==========================================================
 intents = discord.Intents.default()
-intents.message_content = True  # Mandatory to read messages hitting the tripwire
-intents.members = True          # Mandatory to kick/ban offending tokens
+intents.message_content = True
+intents.members = True
 
 bot = commands.Bot(command_prefix="/", intents=intents)
 
 @bot.event
 async def on_ready():
-    print(f"🛡️ Tripwire Core Deployment Successful: {bot.user}")
+    print(f"🛡️ 100% Customizable Tripwire Core Running: {bot.user}")
     try:
-        # Syncs application commands to Discord's servers globally
         await bot.tree.sync()
-        print("🔄 All security slash application interfaces synced.")
+        print("🔄 Universal security option configurations synced globally.")
     except Exception as e:
-        print(f"❌ Error syncing global command arrays: {e}")
+        print(f"❌ Handshake Error: {e}")
 
+# ==========================================================
+# THE FULLY CUSTOMIZABLE ALL-IN-ONE MASTER SETUP
+# ==========================================================
 @bot.tree.command(
     name="setup-tripwire",
-    description="Deploys the Tripwire honey-pot network channel and locks security rules."
+    description="Deploy and completely customize your Tripwire trap configuration matrix."
 )
 @app_commands.describe(
-    action="The enforcement punishment executed when a spam token is trapped.",
-    dummy_account_id="The literal user ID of your secret un-bot-marked monitoring user account."
+    action="The core enforcement punishment executed when a trap is sprung.",
+    dummy_account_id="The User ID of your secret manually joined honey-pot user profile.",
+    channel_name="Custom name for the trap channel (e.g., lounge-verification, general-chat).",
+    visibility="Should normal members see the channel read-only warning or hide it entirely?",
+    timeout_hours="If Action is Timeout, how many hours should it last? (Default: 24)",
+    log_channel="Select a custom staff or admin room to send deep metric interception alerts.",
+    exempt_role="A role completely immune to Tripwire triggers (e.g., Moderators, Trial Staff).",
+    notify_offender="Should the bot DM the caught token explaining the reason for enforcement?",
+    custom_headline="Custom title heading displayed on the honey-pot channel warning canvas.",
+    custom_body="Custom instructions description printed into the honey-pot interface."
 )
-@app_commands.choices(action=[
-    app_commands.Choice(name="Ban Offender", value="ban"),
-    app_commands.Choice(name="Kick Offender", value="kick")
-])
+@app_commands.choices(
+    action=[
+        app_commands.Choice(name="Instant Ban", value="ban"),
+        app_commands.Choice(name="Instant Kick", value="kick"),
+        app_commands.Choice(name="Isolate via Timeout", value="timeout")
+    ],
+    visibility=[
+        app_commands.Choice(name="Public (Visible warning card for normal users)", value="public"),
+        app_commands.Choice(name="Private (Completely invisible to non-administrators)", value="private")
+    ]
+)
 @app_commands.checks.has_permissions(administrator=True)
-async def setup_tripwire(interaction: discord.Interaction, action: app_commands.Choice[str], dummy_account_id: str):
+async def setup_advanced_tripwire(
+    interaction: discord.Interaction,
+    action: app_commands.Choice[str],
+    dummy_account_id: str,
+    channel_name: str = "tripwire",
+    visibility: app_commands.Choice[str] = None,
+    timeout_hours: int = 24,
+    log_channel: discord.TextChannel = None,
+    exempt_role: discord.Role = None,
+    notify_offender: bool = True,
+    custom_headline: str = None,
+    custom_body: str = None
+):
     guild = interaction.guild
-    
-    # Defer response so Discord doesn't issue an automatic timeout error during channel creation
     await interaction.response.defer(ephemeral=True)
 
-    # Validate that the dummy ID passed is actually a valid numerical format
+    # Sanitize inputs
     try:
         clean_dummy_id = int(dummy_account_id.strip())
     except ValueError:
-        return await interaction.followup.send("❌ Formatting Error: The Dummy Account ID must be numbers only.", ephemeral=True)
+        return await interaction.followup.send("❌ Input Mismatch: Dummy Account ID string can only contain numbers.", ephemeral=True)
 
-    # 1. Clean up lingering previous tripwire installations
+    clean_channel_name = channel_name.strip().lower().replace(" ", "-")
+    chosen_visibility = visibility.value if visibility else "public"
+
+    # 1. Dynamically clear old installations matching the custom string profile name
     for channel in guild.text_channels:
-        if channel.name.lower() == "tripwire":
+        if channel.name.lower() == clean_channel_name:
             try:
-                await channel.delete(reason="Tripwire Setup Re-initialization")
+                await channel.delete(reason="Tripwire Master Reconfiguration Sequence")
             except discord.Forbidden:
-                return await interaction.followup.send("❌ Permission Error: Bot role lacks 'Manage Channels' privilege.", ephemeral=True)
+                return await interaction.followup.send(f"❌ Permission Failure: Bot cannot remove old `#{clean_channel_name}` channel.", ephemeral=True)
 
-    # 2. Configure strict permissions (Everyone reads warning, nobody talks)
+    # 2. Build Strict Custom Permission Access Masks
+    is_public = (chosen_visibility == "public")
     overwrites = {
-        guild.default_role: discord.PermissionOverwrite(view_channel=True, send_messages=False),
+        guild.default_role: discord.PermissionOverwrite(view_channel=is_public, send_messages=False),
         guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True)
     }
+    
+    # Inject optional role bypass protections into the channel overwrites array directly
+    if exempt_role:
+        overwrites[exempt_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
 
-    # 3. Create the text honeypot target
+    # 3. Create the Channel Layer
     try:
-        new_channel = await guild.create_text_channel(
-            name="tripwire",
-            overwrites=overwrites,
-            reason="Tripwire Deployment Init"
-        )
+        new_channel = await guild.create_text_channel(name=clean_channel_name, overwrites=overwrites)
     except discord.Forbidden:
-        return await interaction.followup.send("❌ Permission Error: Failed to generate system channels.", ephemeral=True)
+        return await interaction.followup.send("❌ Permission Failure: Cannot initialize channels on this guild structure.", ephemeral=True)
 
-    # 4. Commit settings safely to SQLite database file
-    save_guild_settings(guild.id, new_channel.id, action.value, clean_dummy_id)
+    # 4. Commit Settings Matrix to SQLite
+    exempt_id = exempt_role.id if exempt_role else 0
+    log_id = log_channel.id if log_channel else 0
+    
+    save_advanced_settings(
+        guild.id, clean_channel_name, new_channel.id, action.value, 
+        timeout_hours, clean_dummy_id, log_id, chosen_visibility, 
+        exempt_id, int(notify_offender)
+    )
 
-    # 5. Broadcast clear warning embed to protect real humans
+    # 5. Populate Highly Customizable Warning Canvas Card
+    headline = custom_headline if custom_headline else "⚠️ SECURITY INFRASTRUCTURE LAYER ACTIVE"
+    body = custom_body if custom_body else "Do not type inside this layout perimeter or direct message our monitored tracking address."
+
     embed = discord.Embed(
-        title="⚠️ TRIPWIRE SECURITY PROTOCOL ACTIVE",
-        description="**CRITICAL NOTICE: DO NOT TYPE HERE OR DIRECT MESSAGE OUR DESIGNATED DUMMY SYSTEM USER.**",
+        title=headline,
+        description=f"**{body}**",
         color=discord.Color.red(),
         timestamp=datetime.datetime.now(datetime.timezone.utc)
     )
-    embed.add_field(name="🚨 System Mechanics", value="This environment is designed as a trap. Automated scrapers and mass-DM scripts will automatically trigger isolation countermeasures.", inline=False)
-    embed.add_field(name="⚙️ Configured Matrix", value=f"**Counter-Measure:** `{action.name}`\n**Monitored Trap Target ID:** `{clean_dummy_id}`", inline=False)
-    embed.set_footer(text="Tripwire Automation Matrix")
-    
-    await new_channel.send(embed=embed)
-    await interaction.followup.send(f"✅ Tripwire successfully fortified at {new_channel.mention}!", ephemeral=True)
+    embed.add_field(name="⚙️ Punishment Core", value=f"**Mitigation Plan:** `{action.name}`\n**Timeout Value:** `{timeout_hours} Hours`", inline=True)
+    embed.add_field(name="🛡️ Exemption Shield", value=f"**Bypass Group:** {exempt_role.mention if exempt_role else '`None Configured` '}", inline=True)
+    embed.set_footer(text=f"Secure Perimeter ID: {new_channel.id}")
 
+    await new_channel.send(embed=embed)
+    await interaction.followup.send(f"✅ Custom Tripwire successfully deployed at {new_channel.mention} with advanced database rules!", ephemeral=True)
 
 # ==========================================================
-# INTERACTION DETECTOR AND AUTO-MODERATION ENGINE
+# MITIGATION EVENT RADAR LOOP
 # ==========================================================
 @bot.event
 async def on_message(message: discord.Message):
-    # Security Bypass: Ignore other bots, webhook streams, and direct messages sent to this bot
     if message.author.bot or not message.guild:
         return
 
-    # Check database to see if the current server has Tripwire configured
-    config = get_guild_settings(message.guild.id)
+    config = get_advanced_settings(message.guild.id)
     if not config:
         return
 
     offender = message.author
-    
-    # Bypass Protection: Never auto-moderate server admins or managers if they make a mistake
+
+    # Bypass Shield Check A: Administrators and Message Managers are completely immune
     if offender.guild_permissions.manage_messages or offender.guild_permissions.administrator:
         return
 
-    triggered = False
-    violation_reason = "Triggered automated Tripwire trap mechanics."
+    # Bypass Shield Check B: Custom Role Exemption matching our SQLite profile configuration
+    if config["exempt_role_id"] != 0 and config["exempt_role_id"] in [role.id for role in offender.roles]:
+        return
 
-    # Gate A: Spammer attempts to post content inside the locked channel
+    triggered = False
+    violation_reason = "Triggered custom security matrix system vectors."
+
+    # Intercept Scenario 1: Messages input inside the honey-pot channel
     if message.channel.id == config["channel_id"]:
         triggered = True
-        violation_reason = f"Security Breach: Unauthorized entry/message in protected honey-pot channel ({message.channel.name})."
+        violation_reason = f"Unauthorized messaging inside honey-pot perimeter: `#{config['channel_name']}`"
 
-    # Gate B: Spammer mentions or attempts to target the dummy account user ID
+    # Intercept Scenario 2: Direct text notifications targeting our secret honey-pot profile reference
     elif config["dummy_id"] in [user.id for user in message.mentions]:
         triggered = True
-        violation_reason = f"Security Breach: Mass-DM phishing script targeted monitored honey-pot dummy account ({config['dummy_id']})."
+        violation_reason = f"Mass-DM automated scraping sequence caught targeting secure monitor token user: `{config['dummy_id']}`"
 
-    # Action Execution Module
     if triggered:
         try:
-            # Delete the offending link/message payload instantly
+            # Erase message payload immediately to protect members from malicious strings
             await message.delete()
-            
+
+            # Execute Optional DM Notification Warning
+            if config["notify_offender"] == 1:
+                try:
+                    await offender.send(f"⚠️ **Security Notice:** You have been automatically moderated in **{message.guild.name}** for: {violation_reason}")
+                except discord.Forbidden:
+                    pass # Handled if the offender has user-to-user DMs turned off
+
+            # Execute Custom Configuration Enforcement Pipeline Action
             if config["action"] == "ban":
                 await message.guild.ban(offender, reason=violation_reason, delete_message_days=1)
-                print(f"🔨 [SUCCESS] Banned malicious token {offender.name} ({offender.id}) from {message.guild.name}.")
             elif config["action"] == "kick":
                 await message.guild.kick(offender, reason=violation_reason)
-                print(f"🥾 [SUCCESS] Kicked suspicious token {offender.name} ({offender.id}) from {message.guild.name}.")
-                
-        except discord.Forbidden:
-            print(f"❌ Role Hierarchy Error: Could not punish {offender.name}. Ensure Tripwire's role position is higher than the targets.")
+            elif config["action"] == "timeout":
+                duration = datetime.timedelta(hours=config["timeout_hours"])
+                await offender.timeout(duration, reason=violation_reason)
 
-# Global Error Catcher for Application Commands
-@bot.tree.error
-async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
-    if isinstance(error, app_commands.errors.MissingPermissions):
-        await interaction.response.send_message("❌ Access Denied: This utility requires Administrator privileges.", ephemeral=True)
-    else:
-        print(f"Unhandled system exception: {error}")
+            # Route Clean Interception Logs to Custom Staff Room Environments
+            target_log_channel = bot.get_channel(config["log_channel_id"]) if config["log_channel_id"] != 0 else message.guild.system_channel
+            
+            if target_log_channel:
+                report = discord.Embed(
+                    title="🛡️ TRIPWIRE PERIMETER INTERCEPTION",
+                    color=discord.Color.dark_orange(),
+                    timestamp=datetime.datetime.now(datetime.timezone.utc)
+                )
+                report.add_field(name="Account Accountable", value=f"{offender.mention} (`{offender.id}`)", inline=True)
+                report.add_field(name="Enforcement Pipeline Executed", value=f"`{config['action'].upper()}`", inline=True)
+                report.add_field(name="Metric Infraction Cause", value=f"```{violation_reason}```", inline=False)
+                await target_log_channel.send(embed=report)
+
+        except discord.Forbidden:
+            print(f"❌ Automation Engine Failure: Check role sorting hierarchy positions for: {offender.name}")
 
 if __name__ == "__main__":
-    # Start web thread to hook into Render Free Layer web server expectations
     keep_alive()
-    # Establish persistent engine connection
     bot.run(os.getenv("DISCORD_TOKEN"))
