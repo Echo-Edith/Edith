@@ -401,7 +401,7 @@ class LobbyBot(commands.Cog):
         prefix_commands_list = (
             "👥 **!limit** `<number>`\n"
             "└ *Edits user limit of the current VC. (Must be the VC Creator or an Admin).*\n"
-            "🎵 **!mp** `<song name / Spotify Link>` (or `!play`)\n"
+            "🎵 **!mp** `<song name>` (or `!play`)\n"
             "└ *Searches and plays/queues music track in your voice channel.*\n"
             "📋 **!mq** (or `!queue`)\n"
             "└ *Shows the current playlist queue, active song progress, and queue wait times.*\n"
