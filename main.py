@@ -26,18 +26,14 @@ bot = LobbyBotClient()
 async def on_ready():
     print(f"🛡️ LobbyBot Startup Initialized: {bot.user}")
     
-    # Clean Sync Engine: This completely wipes duplicate commands from the old global cache,
-    # and registers clean, fresh ones instantly on each server you're in.
+    # Clean Sync Engine: Copies the loaded commands and registers them instantly to your server
     print("⚡ Syncing clean layout across all servers...")
     try:
-        # Clear out any stuck global duplicates from Discord's long cache
-        bot.tree.clear_commands(guild=None)
-        await bot.tree.sync()
-        
-        # Sync directly to individual guilds so the / commands appear immediately
         for guild in bot.guilds:
             try:
+                # Copy the loaded cog commands to this server
                 bot.tree.copy_global_to(guild=guild)
+                # Sync them instantly so they appear immediately
                 synced = await bot.tree.sync(guild=guild)
                 print(f"✅ Clean synced {len(synced)} commands to server: {guild.name}")
             except Exception as e:
