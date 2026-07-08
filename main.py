@@ -1,24 +1,9 @@
 import os
-import asyncio
 import discord
 from discord.ext import commands
+from keep_alive import keep_alive
 
-# Force dynamic loading of libopus (Bypasses Render / Host environment gaps)
-try:
-    if not discord.opus.is_loaded():
-        # Try default operating system locations
-        discord.opus.load_opus()
-        print("🎵 Opus Audio Codec loaded successfully via default systems.")
-except Exception:
-    try:
-        # Fallback locations for standard Ubuntu/Debian architecture (Render's host setup)
-        discord.opus.load_opus('libopus.so.0')
-        print("🎵 Opus Audio Codec loaded successfully via fallback 'libopus.so.0'.")
-    except Exception as e:
-        print(f"⚠️ Warning: Could not find libopus dynamic libraries: {e}")
-        print("💡 Solution: Make sure 'libopus-dev' is installed on your host system.")
-
-# Initialize Bot Instance
+# Initialize Bot Instance with required Gateway Intents
 intents = discord.Intents.default()
 intents.message_content = True
 intents.voice_states = True
@@ -47,27 +32,10 @@ class LobbyBotClient(commands.Bot):
 
 bot = LobbyBotClient()
 
-# Keep-alive simple webserver for Render deployments
-from flask import Flask
-from threading import Thread
-
-app = Flask('')
-
-@app.route('/')
-def home():
-    return "LobbyBot is online and active."
-
-def run_web():
-    app.run(host='0.0.0.0', port=int(os.getenv('PORT', 8080)))
-
-def keep_alive():
-    t = Thread(target=run_web)
-    t.start()
-
 if __name__ == "__main__":
     token = os.getenv("DISCORD_TOKEN")
     if not token:
         print("❌ Error: 'DISCORD_TOKEN' environment variable is missing inside Render settings!")
     else:
-        keep_alive()
+        keep_alive()  # Start the background flask server to prevent spin-downs on Render
         bot.run(token)
