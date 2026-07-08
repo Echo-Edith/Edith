@@ -3,7 +3,6 @@ import discord
 from discord.ext import commands
 from keep_alive import keep_alive
 
-# Initialize Bot Instance with required Gateway Intents
 intents = discord.Intents.default()
 intents.message_content = True
 intents.voice_states = True
@@ -14,8 +13,7 @@ class LobbyBotClient(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
 
     async def setup_hook(self):
-        # Auto-load extensions
-        extensions = ['cogs.lobbybot', 'cogs.music']
+        extensions = ['cogs.lobbybot', 'cogs.lobbytools']
         for ext in extensions:
             try:
                 await self.load_extension(ext)
@@ -23,7 +21,6 @@ class LobbyBotClient(commands.Bot):
             except Exception as e:
                 print(f"❌ Failed to load extension {ext}: {e}")
         
-        # Sync Application Command states globally
         await self.tree.sync()
         print("🔁 Application command trees synced successfully.")
 
@@ -35,7 +32,7 @@ bot = LobbyBotClient()
 if __name__ == "__main__":
     token = os.getenv("DISCORD_TOKEN")
     if not token:
-        print("❌ Error: 'DISCORD_TOKEN' environment variable is missing inside Render settings!")
+        print("❌ 'DISCORD_TOKEN' environment variable is missing inside Render settings!")
     else:
-        keep_alive()  # Start the background flask server to prevent spin-downs on Render
+        keep_alive()
         bot.run(token)
