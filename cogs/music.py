@@ -20,7 +20,7 @@ try:
 except ImportError:
     HAS_YTDL = False
 
-# yt-dlp configurations for streaming raw audio
+# Optimized cloud-friendly yt-dlp configurations to bypass data-center IP blocks & bot challenges
 ytdl_format_options = {
     'format': 'bestaudio/best',
     'outtmpl': '%(extractor)s-%(id)s-%(title)s.%(ext)s',
@@ -31,8 +31,16 @@ ytdl_format_options = {
     'logtostderr': False,
     'quiet': True,
     'no_warnings': True,
-    'default_search': 'auto',
-    'source_address': '0.0.0.0',  # bind to ipv4
+    'default_search': 'ytsearch',  # Explicitly search YouTube safely
+    'source_address': '0.0.0.0',   # Bind to IPv4
+    'youtube_skip_dash_manifest': True,
+    # Inject premium-looking headers to bypass basic verification checks
+    'http_headers': {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Sec-Fetch-Mode': 'navigate',
+    }
 }
 
 ffmpeg_options = {
@@ -66,16 +74,33 @@ class Music(commands.Cog):
                 print(f"⚠️ Spotify API failed to authenticate: {e}")
 
     async def get_audio_url(self, search_query: str):
-        """Uses yt-dlp to extract high quality play streams."""
+        """Uses yt-dlp to extract high quality play streams with fallback handling."""
         if not HAS_YTDL:
             raise RuntimeError("yt-dlp is not installed in requirements.txt!")
 
         loop = asyncio.get_event_loop()
+        
+        # Test direct search
         with yt_dlp.YoutubeDL(ytdl_format_options) as ydl:
-            data = await loop.run_in_executor(
-                None, 
-                lambda: ydl.extract_info(f"ytsearch:{search_query}", download=False)
-            )
+            try:
+                # Attempt standard YouTube search
+                data = await loop.run_in_executor(
+                    None, 
+                    lambda: ydl.extract_info(f"ytsearch:{search_query}", download=False)
+                )
+            except Exception as search_err:
+                # FALLBACK: If standard YouTube is blocked, search Soundcloud instead!
+                print(f"⚠️ YouTube Search blocked: {search_err}. Trying fallback platform...")
+                try:
+                    fallback_opts = dict(ytdl_format_options)
+                    fallback_opts['default_search'] = 'scsearch'
+                    with yt_dlp.YoutubeDL(fallback_opts) as fallback_ydl:
+                        data = await loop.run_in_executor(
+                            None,
+                            lambda: fallback_ydl.extract_info(f"scsearch:{search_query}", download=False)
+                        )
+                except Exception as fallback_err:
+                    raise RuntimeError(f"Both search services are currently restricted by hosting IP blocks: {fallback_err}")
             
             if 'entries' in data and len(data['entries']) > 0:
                 video = data['entries'][0]
@@ -209,7 +234,6 @@ class Music(commands.Cog):
         if not vc:
             try:
                 # OVERRIDE USER LIMIT: Dynamically grant the bot connect permissions on the channel.
-                # Under Discord's system logic, this allows the bot to connect even if the limit is set to 1.
                 overwrites = voice_channel.overwrites
                 overwrites[ctx.guild.me] = discord.PermissionOverwrite(connect=True, speak=True)
                 await voice_channel.edit(overwrites=overwrites)
@@ -227,7 +251,6 @@ class Music(commands.Cog):
                 return await ctx.send(f"❌ Failed to connect to Voice Channel: {e}")
         elif vc.channel != voice_channel:
             try:
-                # Ensure connection override permissions are maintained if moving
                 overwrites = voice_channel.overwrites
                 overwrites[ctx.guild.me] = discord.PermissionOverwrite(connect=True, speak=True)
                 await voice_channel.edit(overwrites=overwrites)
