@@ -56,6 +56,35 @@ class LobbyTools(commands.Cog):
         conn.close()
         return leveled_up, current_level
 
+    def remove_xp(self, user_id, amount):
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute('SELECT xp, level FROM user_xp WHERE user_id = ?', (user_id,))
+        row = cursor.fetchone()
+        
+        if not row:
+            conn.close()
+            return False, 1
+            
+        current_xp, current_level = row
+        new_xp = current_xp - amount
+        
+        leveled_down = False
+        while new_xp < 0:
+            if current_level > 1:
+                current_level -= 1
+                leveled_down = True
+                xp_needed_for_prev_level = current_level * 100
+                new_xp += xp_needed_for_prev_level
+            else:
+                new_xp = 0
+                break
+                
+        cursor.execute('UPDATE user_xp SET xp = ?, level = ? WHERE user_id = ?', (new_xp, current_level, user_id))
+        conn.commit()
+        conn.close()
+        return leveled_down, current_level
+
     @tasks.loop(minutes=1)
     async def track_vc_xp(self):
         for guild in self.bot.guilds:
@@ -76,10 +105,21 @@ class LobbyTools(commands.Cog):
                             except:
                                 pass
 
-    @commands.command(name="addxp")
+    # ==========================================================
+    # COG-LOCAL ADMIN ERROR HANDLER
+    # ==========================================================
+    async def cog_command_error(self, ctx: commands.Context, error):
+        """Triggers automatically when users run commands they don't have permission for."""
+        if isinstance(error, commands.MissingPermissions):
+            await ctx.send("❌ **Access Denied:** Only Server Administrators can manage server XP and levels!")
+        elif isinstance(error, commands.MissingRequiredArgument):
+            await ctx.send(f"❌ **Usage Error:** Missing required argument.\nExample: `!{ctx.command.name} @member <amount>`")
+        elif isinstance(error, commands.BadArgument):
+            await ctx.send("❌ **Validation Error:** Invalid user or value provided. Usage: `@member <amount>`.")
+
+    @commands.command(name="addxp", help="Admin Only: Manually awards XP to a specific server member.")
     @commands.has_permissions(administrator=True)
     async def add_user_xp(self, ctx: commands.Context, member: discord.Member, amount: int):
-        """Admin Only: Manually add XP to a specific server member."""
         if amount <= 0:
             return await ctx.send("❌ Setup Error: You must specify an amount of XP greater than 0.")
 
@@ -96,7 +136,26 @@ class LobbyTools(commands.Cog):
             
         await ctx.send(embed=embed)
 
-    @commands.command(name="teams", aliases=["split"])
+    @commands.command(name="removexp", help="Admin Only: Manually removes/deducts XP from a specific server member.")
+    @commands.has_permissions(administrator=True)
+    async def remove_user_xp(self, ctx: commands.Context, member: discord.Member, amount: int):
+        if amount <= 0:
+            return await ctx.send("❌ Setup Error: You must specify an amount of XP greater than 0.")
+
+        leveled_down, new_level = self.remove_xp(member.id, amount)
+        
+        embed = discord.Embed(
+            title="⚡ XP Manually Deducted",
+            description=f"Successfully removed **{amount} XP** from {member.mention}!",
+            color=discord.Color.red()
+        )
+        
+        if leveled_down:
+            embed.add_field(name="📉 Demoted!", value=f"{member.mention} has dropped to **Level {new_level}**.")
+            
+        await ctx.send(embed=embed)
+
+    @commands.command(name="teams", aliases=["split"], help="Shuffles and splits everyone currently in your VC into randomized teams.")
     async def split_teams(self, ctx: commands.Context, team_size: int = None):
         if not ctx.author.voice or not ctx.author.voice.channel:
             return await ctx.send("❌ You must be inside a voice channel to split teams!")
@@ -125,7 +184,7 @@ class LobbyTools(commands.Cog):
         embed.set_footer(text=f"Generated from {ctx.author.voice.channel.name}")
         await ctx.send(embed=embed)
 
-    @commands.command(name="profile", aliases=["level"])
+    @commands.command(name="profile", aliases=["level"], help="Displays your voice leveling statistics, current tier, and active XP bar.")
     async def user_profile(self, ctx: commands.Context, member: discord.Member = None):
         member = member or ctx.author
         conn = sqlite3.connect(DB_FILE)
@@ -157,7 +216,7 @@ class LobbyTools(commands.Cog):
             
         await ctx.send(embed=embed)
 
-    @commands.command(name="top", aliases=["leaderboard"])
+    @commands.command(name="top", aliases=["leaderboard"], help="Displays the server's Top 10 most active voice legends based on total earned XP.")
     async def leaderboard(self, ctx: commands.Context):
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
