@@ -17,11 +17,11 @@ class Music(commands.Cog):
         await self.bot.wait_until_ready()
         
         # High-uptime, free public Lavalink nodes setup
+        # Note: Fixed TypeError by removing the unsupported inactive_timeout parameter for Wavelink v3.x
         nodes = [
             wavelink.Node(
                 uri="http://lavalink.oops.wtf:2000", 
-                password="www.oops.wtf", 
-                inactive_timeout=30
+                password="www.oops.wtf"
             )
         ]
         try:
@@ -182,8 +182,7 @@ class Music(commands.Cog):
             t_mins, t_secs = divmod(int(track.length // 1000), 60)
             embed.add_field(name="⏱️ Track Duration", value=f"{t_mins}m {t_secs}s", inline=True)
             
-            wait_mins, wait_secs = divmod(duration_until_play, 60)
-            wait_text = "Starting next" if duration_until_play == 0 else f"{wait_mins}m {wait_secs}s"
+            wait_text = "Starting next" if duration_until_play == 0 else f"{duration_until_play // 60}m {duration_until_play % 60}s"
             embed.add_field(name="⏳ Wait Time Until Play", value=f"`{wait_text}`", inline=False)
             embed.set_footer(text="Use !mskip to vote skip • Use !mq to view queue")
             
