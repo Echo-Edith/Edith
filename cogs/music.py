@@ -1,6 +1,7 @@
 import discord
 import wavelink
 import asyncio
+from urllib.parse import urlparse
 from discord.ext import commands
 
 class Music(commands.Cog):
@@ -11,35 +12,57 @@ class Music(commands.Cog):
         self.track_creators_raw = {}
         bot.loop.create_task(self.connect_nodes())
 
+    async def check_node_online(self, uri: str) -> bool:
+        """Helper to check if a Lavalink node's host and port are actually online."""
+        try:
+            parsed = urlparse(uri)
+            host = parsed.hostname
+            port = parsed.port or (80 if parsed.scheme == "http" else 443)
+            
+            # Attemping a quick TCP handshake with a 2-second timeout
+            conn = asyncio.open_connection(host, port)
+            reader, writer = await asyncio.wait_for(conn, timeout=2.0)
+            writer.close()
+            await writer.wait_closed()
+            return True
+        except Exception:
+            return False
+
     async def connect_nodes(self):
-        """Tries multiple high-uptime servers one by one until one successfully connects."""
+        """Filters out offline/dead servers and connects only to a confirmed online node."""
         await self.bot.wait_until_ready()
         
-        # List of the best 4 free public music servers online right now
+        # Best available public Lavalink servers
         servers = [
-            {"uri": "http://lavalink.yandere.today:2333", "password": "yanderetoday"},
             {"uri": "http://lava.link:80", "password": "youshallnotpass"},
             {"uri": "http://ll.gsl.network:80", "password": "youshallnotpass"},
-            {"uri": "http://lavalink.jirayu.xyz:2333", "password": "youshallnotpass"}
+            {"uri": "http://lavalink.jirayu.xyz:2333", "password": "youshallnotpass"},
+            {"uri": "http://lavalink.yandere.today:2333", "password": "yanderetoday"}
         ]
         
-        connected = False
-        for server_info in servers:
-            node = wavelink.Node(
-                uri=server_info["uri"],
-                password=server_info["password"]
-            )
-            try:
-                # Try to connect to this single node
-                await wavelink.Pool.connect(nodes=[node], client=self.bot, cache_capacity=100)
-                print(f"🟢 Connected successfully to: {server_info['uri']}")
-                connected = True
-                break  # Stop trying other servers once we are connected!
-            except Exception as e:
-                print(f"⚠️ Failed to connect to {server_info['uri']}: {e}. Trying fallback...")
+        online_node = None
+        for server in servers:
+            print(f"📡 Testing connection to: {server['uri']}...")
+            is_online = await self.check_node_online(server['uri'])
+            
+            if is_online:
+                print(f"✨ {server['uri']} is ONLINE! Assigning to Wavelink...")
+                online_node = wavelink.Node(
+                    uri=server["uri"],
+                    password=server["password"]
+                )
+                break
+            else:
+                print(f"❌ {server['uri']} is offline or unreachable. Skipping...")
         
-        if not connected:
-            print("❌ Critical: All fallback music servers are currently unreachable.")
+        if online_node:
+            try:
+                await wavelink.Pool.connect(nodes=[online_node], client=self.bot, cache_capacity=100)
+                print("🟢 Wavelink pool is active and ready to stream!")
+            except Exception as e:
+                print(f"⚠️ Wavelink pool connection error: {e}")
+        else:
+            print("🚨 CRITICAL: All fallback servers are currently offline.")
 
     @commands.Cog.listener()
     async def on_wavelink_node_ready(self, node: wavelink.Node):
