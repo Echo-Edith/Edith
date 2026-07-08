@@ -155,7 +155,7 @@ class Music(commands.Cog):
             return
 
         song = self.queues[guild_id].pop(0)
-        vc = ctx.voice_client
+        vc = ctx.voice_client or ctx.guild.voice_client
 
         if not vc or not vc.is_connected():
             return
@@ -229,7 +229,7 @@ class Music(commands.Cog):
             return await ctx.send(embed=embed)
 
         voice_channel = ctx.author.voice.channel
-        vc = ctx.voice_client
+        vc = ctx.voice_client or ctx.guild.voice_client
 
         if not vc:
             try:
@@ -379,7 +379,7 @@ class Music(commands.Cog):
     @commands.command(name="mskip", aliases=["skip"])
     async def skip_command(self, ctx: commands.Context):
         """Prefix command: !mskip (requires 50% vote to skip)"""
-        vc = ctx.voice_client
+        vc = ctx.voice_client or ctx.guild.voice_client
         guild_id = ctx.guild.id
 
         if not vc or not vc.is_playing():
@@ -438,18 +438,34 @@ class Music(commands.Cog):
             )
             await ctx.send(embed=embed)
 
+    # ==========================================================
+    # COMPLETE SUSPEND COMMAND WITH FORCED DISCONNECT (!mstop)
+    # ==========================================================
     @commands.command(name="mstop", aliases=["stop"])
     async def stop_command(self, ctx: commands.Context):
         """Prefix command: !mstop"""
-        vc = ctx.voice_client
+        vc = ctx.voice_client or ctx.guild.voice_client
+        guild_id = ctx.guild.id
+        
+        # Always wipe data state cleanly regardless of voice connections
+        if guild_id in self.queues:
+            self.queues[guild_id].clear()
+        self.current_track[guild_id] = None
+        self.skip_votes[guild_id] = set()
+
         if vc:
-            guild_id = ctx.guild.id
-            if guild_id in self.queues:
-                self.queues[guild_id].clear()
-            self.current_track[guild_id] = None
-            self.skip_votes[guild_id] = set()
-            vc.stop()
-            await vc.disconnect()
+            # 1. Stop any currently active streams
+            try:
+                if vc.is_playing() or vc.is_paused():
+                    vc.stop()
+            except Exception as e:
+                print(f"⚠️ Error stopping voice stream on !mstop: {e}")
+
+            # 2. Force complete exit handshake
+            try:
+                await vc.disconnect(force=True)
+            except Exception as e:
+                print(f"⚠️ Error exiting voice state on !mstop: {e}")
             
             embed = discord.Embed(
                 title="⏹️ Playback Suspended",
