@@ -69,7 +69,6 @@ class Music(commands.Cog):
 
         loop = asyncio.get_event_loop()
         with yt_dlp.YoutubeDL(ytdl_format_options) as ydl:
-            # Performs a direct YouTube audio search
             data = await loop.run_in_executor(
                 None, 
                 lambda: ydl.extract_info(f"ytsearch:{search_query}", download=False)
@@ -80,14 +79,15 @@ class Music(commands.Cog):
                 return {
                     'url': video['url'],
                     'title': video['title'],
-                    'duration': video.get('duration', 0)
+                    'duration': video.get('duration', 0),
+                    'webpage_url': video.get('webpage_url', 'https://www.youtube.com')
                 }
             return None
 
     def get_spotify_track_info(self, query: str):
         """Converts query or link to Spotify metadata track name."""
         if not self.spotify:
-            return query  # Fallback directly to search query if Spotify is unconfigured
+            return query
 
         try:
             if "spotify.com/track/" in query:
@@ -95,14 +95,12 @@ class Music(commands.Cog):
                 track = self.spotify.track(track_id)
                 return f"{track['name']} {track['artists'][0]['name']}"
             elif "spotify.com/playlist/" in query:
-                # Optional playlist support (extracts first track name as preview)
                 playlist_id = query.split("playlist/")[1].split("?")[0]
                 results = self.spotify.playlist_tracks(playlist_id, limit=1)
                 if results['items']:
                     track = results['items'][0]['track']
                     return f"{track['name']} {track['artists'][0]['name']}"
             else:
-                # Search Spotify to get the official title and artist format
                 results = self.spotify.search(q=query, limit=1, type='track')
                 if results['tracks']['items']:
                     track = results['tracks']['items'][0]
@@ -110,7 +108,7 @@ class Music(commands.Cog):
         except Exception as e:
             print(f"⚠️ Spotify Metadata parsing error: {e}")
         
-        return query  # Fallback to query if anything breaks
+        return query
 
     def play_next(self, ctx):
         """Handles processing the song queue consecutively."""
@@ -118,7 +116,7 @@ class Music(commands.Cog):
         if guild_id not in self.queues or not self.queues[guild_id]:
             return
 
-        # Pop the next song
+        # Pop the next song from the queue list
         song = self.queues[guild_id].pop(0)
         vc = ctx.voice_client
 
@@ -126,45 +124,76 @@ class Music(commands.Cog):
             return
 
         try:
-            # Play stream
             audio_source = discord.FFmpegPCMAudio(song['url'], **ffmpeg_options)
             vc.play(
                 discord.PCMVolumeTransformer(audio_source), 
                 after=lambda e: self.bot.loop.call_soon_threadsafe(self.play_next, ctx)
             )
             
-            # Send notification
+            # Now Playing UI Embed (Exactly matching the requested Premium layout)
             embed = discord.Embed(
-                title="🎵 Now Playing",
-                description=f"**[{song['title']}]({song['url']})**",
+                title="🔊 Now Playing",
+                description="The next track is now live in your voice channel.",
                 color=discord.Color.gold()
             )
-            embed.set_footer(text="LobbyBot Music Core")
+            embed.add_field(name="👑 Creator", value=song['creator_mention'], inline=False)
+            embed.add_field(name="🏷️ Track Name", value=f"**[{song['title']}]({song['webpage_url']})**", inline=False)
+            
+            # Format song duration
+            duration = song['duration']
+            mins, secs = divmod(duration, 60)
+            duration_str = f"{mins}m {secs}s" if duration else "Live Stream"
+            embed.add_field(name="⏱️ Duration", value=duration_str, inline=False)
+            
+            # Build and show dynamic queue line-up
+            queue_list = self.queues.get(guild_id, [])
+            if queue_list:
+                next_up = ""
+                for idx, q_song in enumerate(queue_list[:3], 1):
+                    next_up += f"`{idx}.` {q_song['title']} (Requested by: {q_song['creator_mention']})\n"
+                if len(queue_list) > 3:
+                    next_up += f"*and {len(queue_list) - 3} more tracks...*"
+                embed.add_field(name="📋 Next Up In Queue", value=next_up, inline=False)
+            else:
+                embed.add_field(name="📋 Next Up In Queue", value="*Queue is empty!*", inline=False)
+
+            embed.set_footer(text="LobbyBot Music Core • All empty rooms self-destruct")
+            if ctx.author.display_avatar:
+                embed.set_thumbnail(url=ctx.author.display_avatar.url)
+
             self.bot.loop.create_task(ctx.send(embed=embed))
         except Exception as e:
             print(f"⚠️ Playback exception: {e}")
             self.play_next(ctx)
 
-    @commands.command(name="mp")
+    @commands.command(name="mp", aliases=["play"])
     async def mp_command(self, ctx: commands.Context, *, query: str = None):
         """Prefix-based music playing engine: !mp [song name]"""
         if not query:
-            return await ctx.send("❌ Error: Please specify a song name or link!\nExample: `!mp Starboy The Weeknd`")
+            embed = discord.Embed(
+                title="❌ Invalid Command Usage",
+                description="Please specify a song name or valid URL link after the command.",
+                color=discord.Color.red()
+            )
+            embed.add_field(name="📝 Example", value="`!mp Starboy The Weeknd` or `!play <spotify-link>`", inline=False)
+            return await ctx.send(embed=embed)
 
-        # Validate Dependencies before attempting connections
         if not HAS_YTDL or not HAS_SPOTIPY:
             return await ctx.send(
                 "⚠️ **Environment Notice:** Music streaming features require `yt-dlp` and `spotipy` inside your `requirements.txt`.\n"
                 "Please run `pip install yt-dlp spotipy pynacl` to install dependencies."
             )
 
-        # Ensure author is inside a voice channel
         if not ctx.author.voice or not ctx.author.voice.channel:
-            return await ctx.send("❌ You must be connected to a voice channel to play music!")
+            embed = discord.Embed(
+                title="❌ Voice Channel Error",
+                description="You must be connected to an active voice channel to request music!",
+                color=discord.Color.red()
+            )
+            return await ctx.send(embed=embed)
 
         voice_channel = ctx.author.voice.channel
 
-        # Handle joining/shifting voice channels safely
         vc = ctx.voice_client
         if not vc:
             try:
@@ -174,53 +203,68 @@ class Music(commands.Cog):
         elif vc.channel != voice_channel:
             await vc.move_to(voice_channel)
 
-        processing_msg = await ctx.send("🔍 *Searching and processing audio...*")
+        processing_msg = await ctx.send("🔍 *Searching database and processing audio...*")
 
-        # 1. Convert to Spotify Metadata if available
         search_term = self.get_spotify_track_info(query)
 
-        # 2. Get YouTube streaming source URL
         try:
             track_data = await self.get_audio_url(search_term)
             if not track_data:
-                return await processing_msg.edit(content="❌ Could not find a matching audio track on YouTube.")
+                return await processing_msg.edit(content="❌ Could not find a matching audio track.")
         except Exception as e:
-            return await processing_msg.edit(content=f"❌ Audio stream extraction error: {e}")
+            return await processing_msg.edit(content=f"❌ Audio extraction error: {e}")
 
-        # 3. Add to Server Queue
+        # Attach request details
+        track_data['creator_mention'] = ctx.author.mention
+
         guild_id = ctx.guild.id
         if guild_id not in self.queues:
             self.queues[guild_id] = []
         
         self.queues[guild_id].append(track_data)
 
-        # If not playing already, start immediately
+        await processing_msg.delete()
+
         if not vc.is_playing():
-            await processing_msg.delete()
             self.play_next(ctx)
         else:
+            # Added to queue UI embed matching the exact design token of screenshot
             embed = discord.Embed(
-                title="📝 Song Queued",
-                description=f"Added **{track_data['title']}** to the play queue.",
+                title="📝 Track Added to Queue",
+                description="Your requested song has been stacked into the lineup.",
                 color=discord.Color.gold()
             )
-            embed.set_footer(text=f"Queue Position: #{len(self.queues[guild_id])}")
-            await processing_msg.delete()
+            embed.add_field(name="👑 Creator", value=ctx.author.mention, inline=False)
+            embed.add_field(name="🏷️ Track Name", value=f"**[{track_data['title']}]({track_data['webpage_url']})**", inline=False)
+            embed.add_field(name="👥 Position in Queue", value=f"`#{len(self.queues[guild_id])}`", inline=False)
+            embed.set_footer(text="Use !mskip to skip current playing track")
+            if ctx.author.display_avatar:
+                embed.set_thumbnail(url=ctx.author.display_avatar.url)
             await ctx.send(embed=embed)
 
-    @commands.command(name="skip")
+    @commands.command(name="mskip", aliases=["skip"])
     async def skip_command(self, ctx: commands.Context):
-        """Prefix command: !skip"""
+        """Prefix command: !mskip (with !skip alias)"""
         vc = ctx.voice_client
         if vc and vc.is_playing():
             vc.stop()
-            await ctx.send("⏭️ Skipped current song.")
+            embed = discord.Embed(
+                title="⏭️ Track Skipped",
+                description="The current active track has been skipped. Transitioning to next lineup item...",
+                color=discord.Color.gold()
+            )
+            await ctx.send(embed=embed)
         else:
-            await ctx.send("❌ Nothing is currently playing.")
+            embed = discord.Embed(
+                title="❌ Playback Warning",
+                description="There is no audio playing in this room to skip.",
+                color=discord.Color.red()
+            )
+            await ctx.send(embed=embed)
 
-    @commands.command(name="stop")
+    @commands.command(name="mstop", aliases=["stop"])
     async def stop_command(self, ctx: commands.Context):
-        """Prefix command: !stop"""
+        """Prefix command: !mstop (with !stop alias)"""
         vc = ctx.voice_client
         if vc:
             guild_id = ctx.guild.id
@@ -228,9 +272,20 @@ class Music(commands.Cog):
                 self.queues[guild_id].clear()
             vc.stop()
             await vc.disconnect()
-            await ctx.send("⏹️ Music stopped and disconnected from voice channel.")
+            
+            embed = discord.Embed(
+                title="⏹️ Playback Suspended",
+                description="The queue has been wiped clean and LobbyBot has exited the voice sector.",
+                color=discord.Color.gold()
+            )
+            await ctx.send(embed=embed)
         else:
-            await ctx.send("❌ I am not connected to a voice channel.")
+            embed = discord.Embed(
+                title="❌ Voice Connection Warning",
+                description="LobbyBot is not connected to any active voice sectors in this server.",
+                color=discord.Color.red()
+            )
+            await ctx.send(embed=embed)
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Music(bot))
