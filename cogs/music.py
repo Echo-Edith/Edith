@@ -13,29 +13,43 @@ class Music(commands.Cog):
         bot.loop.create_task(self.connect_nodes())
 
     async def connect_nodes(self):
-        """Establishes connection with free, high-performance, DRM-free Lavalink nodes."""
+        """Establishes connection with multiple fallback Lavalink nodes."""
         await self.bot.wait_until_ready()
         
-        # High-uptime, free public Lavalink nodes setup
-        # Note: Fixed TypeError by removing the unsupported inactive_timeout parameter for Wavelink v3.x
+        # A pool of high-uptime, free public Lavalink v3/v4 nodes.
+        # If one fails to connect, Wavelink automatically shifts resources to the working ones.
         nodes = [
+            # Node 1: Deathes Node (High Uptime)
             wavelink.Node(
-                uri="http://lavalink.oops.wtf:2000", 
-                password="www.oops.wtf"
+                uri="http://lavalink.yandere.today:2333",
+                password="yanderetoday"
+            ),
+            # Node 2: Fastcast Node (Backup 1)
+            wavelink.Node(
+                uri="http://lavalink.jirayu.xyz:2333",
+                password="youshallnotpass"
+            ),
+            # Node 3: Secondary Backup Node (Backup 2)
+            wavelink.Node(
+                uri="http://ll.gsl.network:80",
+                password="youshallnotpass"
             )
         ]
-        try:
-            await wavelink.Pool.connect(nodes=nodes, client=self.bot, cache_capacity=100)
-            print("🟢 Wavelink Lavalink Node Connected Successfully.")
-        except Exception as e:
-            print(f"⚠️ Failed to connect to Lavalink Nodes: {e}")
+        
+        for node in nodes:
+            try:
+                # We connect them individually in a safe try/except block to keep offline nodes from halting the setup
+                await wavelink.Pool.connect(nodes=[node], client=self.bot, cache_capacity=100)
+                print(f"🟢 Successfully connected to Lavalink Node: {node.uri}")
+            except Exception as e:
+                print(f"⚠️ Could not connect to fallback node {node.uri}: {e}")
 
     # ==========================================================
     # WAVELINK EVENT LISTENERS
     # ==========================================================
     @commands.Cog.listener()
     async def on_wavelink_node_ready(self, node: wavelink.Node):
-        print(f"📡 Lavalink Node successfully loaded: {node.identifier}")
+        print(f"📡 Lavalink Node is active and ready: {node.identifier}")
 
     @commands.Cog.listener()
     async def on_wavelink_track_start(self, payload: wavelink.TrackStartEventPayload):
