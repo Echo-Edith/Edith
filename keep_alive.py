@@ -6,7 +6,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Tripwire Security Core: Online & Monitoring"
+    return "The lobby is open. Grab a drink and don't blow into your mic! 🎙️"
 
 def run_web_server():
     # Render automatically assigns a port value to the PORT variable dynamically
