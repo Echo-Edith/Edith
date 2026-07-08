@@ -27,10 +27,9 @@ async def on_ready():
     print(f"🛡️ LobbyBot Startup Initialized: {bot.user}")
     print(f"Connected to {len(bot.guilds)} servers.")
     
-    # PUBLIC BOT OPTIMIZATION:
-    # We only sync globally here. This registers commands with Discord's central cache.
-    # New servers will instantly have the commands when they add the bot, completely
-    # avoiding rate limits from syncing individual guilds.
+    # Clean Global Sync (Resolves Double Commands & Rate-Limit status crashes):
+    # We only sync globally once. We DO NOT sync or clear individual guilds in a loop.
+    # This keeps startup incredibly fast and lets the status cycler run instantly.
     print("🌍 Syncing commands globally...")
     try:
         global_synced = await bot.tree.sync()
