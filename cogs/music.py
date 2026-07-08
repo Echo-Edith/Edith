@@ -1,4 +1,3 @@
-```python
 import os
 import asyncio
 import discord
@@ -235,5 +234,3 @@ class Music(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Music(bot))
-
-```
