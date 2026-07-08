@@ -2,6 +2,7 @@ import os
 import asyncio
 import discord
 import random
+import time
 from discord.ext import commands
 
 # Check if spotipy is installed
@@ -42,7 +43,9 @@ ffmpeg_options = {
 class Music(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.queues = {}  # {guild_id: [songs]}
+        self.queues = {}          # {guild_id: [songs]}
+        self.current_track = {}    # {guild_id: song_data}
+        self.skip_votes = {}       # {guild_id: set(voted_user_ids)}
         self.spotify = None
         self.init_spotify()
 
@@ -110,13 +113,22 @@ class Music(commands.Cog):
         
         return query
 
+    def format_duration(self, seconds: int) -> str:
+        """Helper to format duration elegantly."""
+        if not seconds:
+            return "Live Stream"
+        mins, secs = divmod(int(seconds), 60)
+        return f"{mins}m {secs}s"
+
     def play_next(self, ctx):
-        """Handles processing the song queue consecutively."""
+        """Handles processing the song queue consecutively with auto-disconnect safety."""
         guild_id = ctx.guild.id
+        self.skip_votes[guild_id] = set()  # Clear skip votes for the new track
+        self.current_track[guild_id] = None
+
         if guild_id not in self.queues or not self.queues[guild_id]:
             return
 
-        # Pop the next song from the queue list
         song = self.queues[guild_id].pop(0)
         vc = ctx.voice_client
 
@@ -125,12 +137,17 @@ class Music(commands.Cog):
 
         try:
             audio_source = discord.FFmpegPCMAudio(song['url'], **ffmpeg_options)
+            
+            # Setup metadata for live timing lookups
+            song['start_time'] = time.time()
+            self.current_track[guild_id] = song
+
             vc.play(
                 discord.PCMVolumeTransformer(audio_source), 
                 after=lambda e: self.bot.loop.call_soon_threadsafe(self.play_next, ctx)
             )
             
-            # Now Playing UI Embed (Exactly matching the requested Premium layout)
+            # Now Playing UI Embed
             embed = discord.Embed(
                 title="🔊 Now Playing",
                 description="The next track is now live in your voice channel.",
@@ -138,14 +155,8 @@ class Music(commands.Cog):
             )
             embed.add_field(name="👑 Creator", value=song['creator_mention'], inline=False)
             embed.add_field(name="🏷️ Track Name", value=f"**[{song['title']}]({song['webpage_url']})**", inline=False)
+            embed.add_field(name="⏱️ Duration", value=self.format_duration(song['duration']), inline=False)
             
-            # Format song duration
-            duration = song['duration']
-            mins, secs = divmod(duration, 60)
-            duration_str = f"{mins}m {secs}s" if duration else "Live Stream"
-            embed.add_field(name="⏱️ Duration", value=duration_str, inline=False)
-            
-            # Build and show dynamic queue line-up
             queue_list = self.queues.get(guild_id, [])
             if queue_list:
                 next_up = ""
@@ -175,7 +186,7 @@ class Music(commands.Cog):
                 description="Please specify a song name or valid URL link after the command.",
                 color=discord.Color.red()
             )
-            embed.add_field(name="📝 Example", value="`!mp Starboy The Weeknd` or `!play <spotify-link>`", inline=False)
+            embed.add_field(name="📝 Example", value="`!mp Starboy` or `!play <spotify-link>`", inline=False)
             return await ctx.send(embed=embed)
 
         if not HAS_YTDL or not HAS_SPOTIPY:
@@ -193,15 +204,36 @@ class Music(commands.Cog):
             return await ctx.send(embed=embed)
 
         voice_channel = ctx.author.voice.channel
-
         vc = ctx.voice_client
+
         if not vc:
             try:
-                vc = await voice_channel.connect()
+                # OVERRIDE USER LIMIT: Dynamically grant the bot connect permissions on the channel.
+                # Under Discord's system logic, this allows the bot to connect even if the limit is set to 1.
+                overwrites = voice_channel.overwrites
+                overwrites[ctx.guild.me] = discord.PermissionOverwrite(connect=True, speak=True)
+                await voice_channel.edit(overwrites=overwrites)
+
+                async with asyncio.timeout(10.0):
+                    vc = await voice_channel.connect(reconnect=True)
+            except asyncio.TimeoutError:
+                embed = discord.Embed(
+                    title="⚠️ Voice Connection Timeout",
+                    description="The host server took too long to connect to Discord's voice servers.",
+                    color=discord.Color.red()
+                )
+                return await ctx.send(embed=embed)
             except Exception as e:
                 return await ctx.send(f"❌ Failed to connect to Voice Channel: {e}")
         elif vc.channel != voice_channel:
-            await vc.move_to(voice_channel)
+            try:
+                # Ensure connection override permissions are maintained if moving
+                overwrites = voice_channel.overwrites
+                overwrites[ctx.guild.me] = discord.PermissionOverwrite(connect=True, speak=True)
+                await voice_channel.edit(overwrites=overwrites)
+                await vc.move_to(voice_channel)
+            except Exception as e:
+                return await ctx.send(f"❌ Failed to move to channel: {e}")
 
         processing_msg = await ctx.send("🔍 *Searching database and processing audio...*")
 
@@ -214,21 +246,35 @@ class Music(commands.Cog):
         except Exception as e:
             return await processing_msg.edit(content=f"❌ Audio extraction error: {e}")
 
-        # Attach request details
         track_data['creator_mention'] = ctx.author.mention
-
+        track_data['creator_id'] = ctx.author.id
         guild_id = ctx.guild.id
+        
         if guild_id not in self.queues:
             self.queues[guild_id] = []
         
         self.queues[guild_id].append(track_data)
 
-        await processing_msg.delete()
+        # Calculate exact duration until this new song starts playing
+        duration_until_play = 0
+        current_active = self.current_track.get(guild_id)
+        if current_active:
+            elapsed = time.time() - current_active.get('start_time', time.time())
+            time_remaining = max(0, current_active.get('duration', 0) - elapsed)
+            duration_until_play += time_remaining
+
+        # Add up the durations of all songs currently ahead of it in the queue
+        for song in self.queues[guild_id][:-1]:
+            duration_until_play += song.get('duration', 0)
+
+        try:
+            await processing_msg.delete()
+        except Exception:
+            pass
 
         if not vc.is_playing():
             self.play_next(ctx)
         else:
-            # Added to queue UI embed matching the exact design token of screenshot
             embed = discord.Embed(
                 title="📝 Track Added to Queue",
                 description="Your requested song has been stacked into the lineup.",
@@ -236,40 +282,149 @@ class Music(commands.Cog):
             )
             embed.add_field(name="👑 Creator", value=ctx.author.mention, inline=False)
             embed.add_field(name="🏷️ Track Name", value=f"**[{track_data['title']}]({track_data['webpage_url']})**", inline=False)
-            embed.add_field(name="👥 Position in Queue", value=f"`#{len(self.queues[guild_id])}`", inline=False)
-            embed.set_footer(text="Use !mskip to skip current playing track")
+            embed.add_field(name="👥 Position in Queue", value=f"`#{len(self.queues[guild_id])}`", inline=True)
+            embed.add_field(name="⏱️ Track Duration", value=self.format_duration(track_data['duration']), inline=True)
+            
+            wait_text = "Starting next" if duration_until_play == 0 else self.format_duration(duration_until_play)
+            embed.add_field(name="⏳ Wait Time Until Play", value=f"`{wait_text}`", inline=False)
+            embed.set_footer(text="Use !mskip to vote skip • Use !mq to view queue")
+            
             if ctx.author.display_avatar:
                 embed.set_thumbnail(url=ctx.author.display_avatar.url)
             await ctx.send(embed=embed)
 
+    # ==========================================================
+    # SHOW QUEUE COMMAND (!mq / !queue)
+    # ==========================================================
+    @commands.command(name="mq", aliases=["queue"])
+    async def mq_command(self, ctx: commands.Context):
+        """Prefix command: !mq (shows the current server play queue)"""
+        guild_id = ctx.guild.id
+        embed = discord.Embed(
+            title="📋 Server Play Queue",
+            color=discord.Color.gold()
+        )
+
+        current = self.current_track.get(guild_id)
+        if not current:
+            embed.description = "*Nothing is currently playing. Use `!mp <song>` to start!*"
+            return await ctx.send(embed=embed)
+
+        # 1. Formulate currently playing status bar
+        elapsed = time.time() - current['start_time']
+        duration = current['duration']
+        progress_percentage = min(1.0, elapsed / duration) if duration else 0
+        bars = 15
+        filled_bars = int(progress_percentage * bars)
+        progress_bar = "▬" * filled_bars + "🔘" + "▬" * (bars - filled_bars - 1)
+        
+        current_time_str = self.format_duration(elapsed)
+        total_time_str = self.format_duration(duration)
+        
+        embed.add_field(
+            name="🎵 Now Playing",
+            value=f"**[{current['title']}]({current['webpage_url']})**\n"
+                  f"Requested by: {current['creator_mention']}\n"
+                  f"`[{current_time_str}]` {progress_bar} `[{total_time_str}]`",
+            inline=False
+        )
+
+        # 2. Add queued songs listing
+        queue_list = self.queues.get(guild_id, [])
+        if queue_list:
+            upcoming_list = ""
+            accumulated_wait = duration - elapsed  # Start with remaining time of current song
+            for idx, song in enumerate(queue_list[:5], 1):
+                wait_duration_str = self.format_duration(accumulated_wait)
+                upcoming_list += f"`{idx}.` **[{song['title']}]({song['webpage_url']})** | wait: `{wait_duration_str}` (by {song['creator_mention']})\n"
+                accumulated_wait += song['duration']
+                
+            if len(queue_list) > 5:
+                upcoming_list += f"*...and {len(queue_list) - 5} more tracks in the queue.*"
+                
+            embed.add_field(name="📋 Lineup Tracks", value=upcoming_list, inline=False)
+            embed.set_footer(text=f"Total Queued Songs: {len(queue_list)} | Run !mskip to skip")
+        else:
+            embed.add_field(name="📋 Lineup Tracks", value="*Queue is empty!*", inline=False)
+            embed.set_footer(text="Run !mp <song> to queue more tracks.")
+
+        await ctx.send(embed=embed)
+
+    # ==========================================================
+    # DEMOCRATIC VOTE SKIP COMMAND (!mskip)
+    # ==========================================================
     @commands.command(name="mskip", aliases=["skip"])
     async def skip_command(self, ctx: commands.Context):
-        """Prefix command: !mskip (with !skip alias)"""
+        """Prefix command: !mskip (requires 50% vote to skip)"""
         vc = ctx.voice_client
-        if vc and vc.is_playing():
+        guild_id = ctx.guild.id
+
+        if not vc or not vc.is_playing():
+            embed = discord.Embed(title="❌ Playback Warning", description="There is no audio playing in this room to skip.", color=discord.Color.red())
+            return await ctx.send(embed=embed)
+
+        current = self.current_track.get(guild_id)
+        if not current:
+            vc.stop()
+            return
+
+        # Check voice channel participants (exclude bots)
+        listeners = [m for m in vc.channel.members if not m.bot]
+        total_listeners = len(listeners)
+
+        # Override skip instantly if author is the track requestor, an Admin, or server Owner
+        is_creator = ctx.author.id == current.get('creator_id')
+        is_admin = ctx.author.guild_permissions.administrator or ctx.author.id == ctx.guild.owner_id
+
+        if is_creator or is_admin:
+            vc.stop()
+            embed = discord.Embed(
+                title="⏭️ Force Skipped",
+                description=f"Track was force skipped by **{ctx.author.name}** (Authorized Bypass).",
+                color=discord.Color.gold()
+            )
+            return await ctx.send(embed=embed)
+
+        # Process democratic skip voting
+        if guild_id not in self.skip_votes:
+            self.skip_votes[guild_id] = set()
+
+        if ctx.author.id in self.skip_votes[guild_id]:
+            return await ctx.send("❌ You have already voted to skip this song!")
+
+        self.skip_votes[guild_id].add(ctx.author.id)
+        votes_received = len(self.skip_votes[guild_id])
+        
+        # Calculate needed votes (50% of listeners, rounded up)
+        votes_needed = max(1, (total_listeners + 1) // 2)
+
+        if votes_received >= votes_needed:
             vc.stop()
             embed = discord.Embed(
                 title="⏭️ Track Skipped",
-                description="The current active track has been skipped. Transitioning to next lineup item...",
+                description="Vote threshold achieved! Skipping to next queue item...",
                 color=discord.Color.gold()
             )
             await ctx.send(embed=embed)
         else:
             embed = discord.Embed(
-                title="❌ Playback Warning",
-                description="There is no audio playing in this room to skip.",
-                color=discord.Color.red()
+                title="🗳️ Vote Skip Registered",
+                description=f"**{ctx.author.name}** voted to skip the current track.\n"
+                            f"📈 Progress: `{votes_received}/{votes_needed}` votes (At least 50% needed).",
+                color=discord.Color.gold()
             )
             await ctx.send(embed=embed)
 
     @commands.command(name="mstop", aliases=["stop"])
     async def stop_command(self, ctx: commands.Context):
-        """Prefix command: !mstop (with !stop alias)"""
+        """Prefix command: !mstop"""
         vc = ctx.voice_client
         if vc:
             guild_id = ctx.guild.id
             if guild_id in self.queues:
                 self.queues[guild_id].clear()
+            self.current_track[guild_id] = None
+            self.skip_votes[guild_id] = set()
             vc.stop()
             await vc.disconnect()
             
