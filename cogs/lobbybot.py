@@ -376,7 +376,7 @@ class LobbyBot(commands.Cog):
     async def help_command(self, interaction: discord.Interaction):
         embed = discord.Embed(
             title="❓ LobbyBot Help & Command Index",
-            description="LobbyBot handles dynamic voice channels and high-fidelity music playback.\nHere is the full index of all commands organized by prefix type:",
+            description="LobbyBot handles temporary custom voice channels and automated voice channel activity leveling.\nHere is the full index of all commands organized by type:",
             color=discord.Color.gold()
         )
         
@@ -400,19 +400,17 @@ class LobbyBot(commands.Cog):
         # Prefix Commands Section
         prefix_commands_list = (
             "👥 **!limit** `<number>`\n"
-            "└ *Edits user limit of the current VC. (Must be the VC Creator or an Admin).*\n"
-            "🎵 **!mp** `<song name>` (or `!play`)\n"
-            "└ *Searches and plays/queues music track in your voice channel.*\n"
-            "📋 **!mq** (or `!queue`)\n"
-            "└ *Shows the current playlist queue, active song progress, and queue wait times.*\n"
-            "⏭️ **!mskip** (or `!skip`)\n"
-            "└ *Starts a democratic vote (needs 50% of VC users) to skip the song.*\n"
-            "⏹️ **!mstop** (or `!stop`)\n"
-            "└ *Completely wipes the music queue and disconnects the bot from the VC.*"
+            "└ *Edits user limit of your current temporary VC.*\n"
+            "👑 **!profile** (or `!level`)\n"
+            "└ *Displays your voice leveling statistics, current tier, and active XP bar.*\n"
+            "🎮 **!teams** `[size]` (or `!split`)\n"
+            "└ *Balances and completely splits everyone sitting in your VC into custom gaming teams.*\n"
+            "🏆 **!top** (or `!leaderboard`)\n"
+            "└ *Displays the server's Top 10 most active voice legends based on total earned XP.*"
         )
         embed.add_field(name="⚙️ Prefix Commands (!)", value=prefix_commands_list, inline=False)
         
-        embed.set_footer(text="LobbyBot • Premium Voice & Music Management")
+        embed.set_footer(text="LobbyBot • Premium Voice & Engagement Management")
         if interaction.user.display_avatar:
             embed.set_thumbnail(url=interaction.user.display_avatar.url)
         await interaction.response.send_message(embed=embed)
