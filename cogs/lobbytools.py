@@ -45,10 +45,11 @@ class LobbyTools(commands.Cog):
         xp_needed = current_level * 100
         
         leveled_up = False
-        if new_xp >= xp_needed:
+        while new_xp >= xp_needed:
             new_xp -= xp_needed
             current_level += 1
             leveled_up = True
+            xp_needed = current_level * 100
             
         cursor.execute('UPDATE user_xp SET xp = ?, level = ? WHERE user_id = ?', (new_xp, current_level, user_id))
         conn.commit()
@@ -74,6 +75,26 @@ class LobbyTools(commands.Cog):
                                 await channel.send(embed=embed)
                             except:
                                 pass
+
+    @commands.command(name="addxp")
+    @commands.has_permissions(administrator=True)
+    async def add_user_xp(self, ctx: commands.Context, member: discord.Member, amount: int):
+        """Admin Only: Manually add XP to a specific server member."""
+        if amount <= 0:
+            return await ctx.send("❌ Setup Error: You must specify an amount of XP greater than 0.")
+
+        leveled_up, new_level = self.add_xp(member.id, amount)
+        
+        embed = discord.Embed(
+            title="⚡ XP Manually Awarded",
+            description=f"Successfully granted **{amount} XP** to {member.mention}!",
+            color=discord.Color.gold()
+        )
+        
+        if leveled_up:
+            embed.add_field(name="🎉 Level Up!", value=f"{member.mention} has leveled up to **Level {new_level}**!")
+            
+        await ctx.send(embed=embed)
 
     @commands.command(name="teams", aliases=["split"])
     async def split_teams(self, ctx: commands.Context, team_size: int = None):
