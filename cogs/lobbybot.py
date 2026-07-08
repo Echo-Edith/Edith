@@ -346,7 +346,7 @@ class LobbyBot(commands.Cog):
         except discord.Forbidden:
             return "❌ Error: LobbyBot does not have permissions to edit this voice channel's settings."
 
-    @commands.command(name="limit")
+    @commands.command(name="limit", help="Edits the maximum user limit of your active dynamic voice room.")
     async def limit_prefix(self, ctx: commands.Context, user_limit: int = None):
         """Prefix command: !limit [number]"""
         if user_limit is None:
@@ -376,41 +376,32 @@ class LobbyBot(commands.Cog):
     async def help_command(self, interaction: discord.Interaction):
         embed = discord.Embed(
             title="❓ LobbyBot Help & Command Index",
-            description="LobbyBot handles temporary custom voice channels and automated voice channel activity leveling.\nHere is the full index of all commands organized by type:",
+            description="LobbyBot handles dynamic voice channels and automated voice channel activity leveling.\nHere is the full index of all commands currently active inside the bot:",
             color=discord.Color.gold()
         )
         
-        # Slash Commands Section
-        slash_commands_list = (
-            "🔊 **/open-vc** `[name] [limit]`\n"
-            "└ *Creates a temporary, self-deleting voice room.*\n"
-            "🛡️ **/restrict-vc** `[mode] [roles...]` `[Admin]`\n"
-            "└ *Configures permission levels for opening new temporary VCs.*\n"
-            "📁 **/setup-logs** `[Admin]`\n"
-            "└ *Initializes a private logs channel to track VC creations and lifespans.*\n"
-            "📋 **/changelogs**\n"
-            "└ *Lists the latest live updates for LobbyBot directly from configuration stream.*\n"
-            "📊 **/system-stats**\n"
-            "└ *Exposes active connection latency, bot uptime, and server count.*\n"
-            "❓ **/help**\n"
-            "└ *Displays this comprehensive interactive command guide.*"
-        )
-        embed.add_field(name="✨ Slash Commands (/) ", value=slash_commands_list, inline=False)
-        
-        # Prefix Commands Section
-        prefix_commands_list = (
-            "👥 **!limit** `<number>`\n"
-            "└ *Edits user limit of your current temporary VC.*\n"
-            "👑 **!profile** (or `!level`)\n"
-            "└ *Displays your voice leveling statistics, current tier, and active XP bar.*\n"
-            "🎮 **!teams** `[size]` (or `!split`)\n"
-            "└ *Balances and completely splits everyone sitting in your VC into custom gaming teams.*\n"
-            "🏆 **!top** (or `!leaderboard`)\n"
-            "└ *Displays the server's Top 10 most active voice legends based on total earned XP.*"
-        )
-        embed.add_field(name="⚙️ Prefix Commands (!)", value=prefix_commands_list, inline=False)
-        
-        embed.set_footer(text="LobbyBot • Premium Voice & Engagement Management")
+        # Dynamic Slash Commands Loader
+        slash_commands_list = []
+        for cog_name, cog in self.bot.cogs.items():
+            for cmd in cog.get_app_commands():
+                desc = cmd.description or "No description provided."
+                slash_commands_list.append(f"🔊 **/{cmd.name}**\n└ *{desc}*")
+                
+        if slash_commands_list:
+            embed.add_field(name="✨ Slash Commands (/)", value="\n".join(slash_commands_list), inline=False)
+            
+        # Dynamic Prefix Commands Loader
+        prefix_commands_list = []
+        for cog_name, cog in self.bot.cogs.items():
+            for cmd in cog.get_commands():
+                desc = cmd.help or cmd.description or "No description provided."
+                aliases = f" (or `!{', !'.join(cmd.aliases)}`)" if cmd.aliases else ""
+                prefix_commands_list.append(f"⚙️ **!{cmd.name}**{aliases}\n└ *{desc}*")
+                
+        if prefix_commands_list:
+            embed.add_field(name="⚙️ Prefix Commands (!)", value="\n".join(prefix_commands_list), inline=False)
+            
+        embed.set_footer(text="LobbyBot • Auto-updating Command Core")
         if interaction.user.display_avatar:
             embed.set_thumbnail(url=interaction.user.display_avatar.url)
         await interaction.response.send_message(embed=embed)
