@@ -43,6 +43,22 @@ class LobbyBot(commands.Cog):
             )
         ''')
         
+        # New persistent stats tracker table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS stats_tracker (
+                stat_key TEXT PRIMARY KEY,
+                stat_value INTEGER
+            )
+        ''')
+
+        # New rolling 24-hour server tracker table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS server_daily_tracker (
+                guild_id INTEGER PRIMARY KEY,
+                last_seen REAL
+            )
+        ''')
+        
         # Safe structural database update check
         cursor.execute("PRAGMA table_info(vc_config)")
         columns = [col[1] for col in cursor.fetchall()]
@@ -107,6 +123,26 @@ class LobbyBot(commands.Cog):
         row = cursor.fetchone()
         conn.close()
         return row[0] if row else None
+
+    # Helpers for persistent stats
+    def increment_stat(self, key):
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO stats_tracker (stat_key, stat_value)
+            VALUES (?, 1)
+            ON CONFLICT(stat_key) DO UPDATE SET stat_value = stat_value + 1
+        ''', (key,))
+        conn.commit()
+        conn.close()
+
+    def get_stat(self, key):
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute('SELECT stat_value FROM stats_tracker WHERE stat_key = ?', (key,))
+        row = cursor.fetchone()
+        conn.close()
+        return row[0] if row else 0
 
     # ==========================================================
     # BOT PRESENCE CONTROL LOOP
@@ -292,6 +328,9 @@ class LobbyBot(commands.Cog):
             conn.commit()
             conn.close()
             
+            # Persistent Stat Increment Tracker for open-vc count
+            self.increment_stat("total_opened_vcs")
+            
             embed = discord.Embed(
                 title="🔊 Ephemeral Voice Channel Opened!",
                 description="A new dynamic room has been established.",
@@ -359,17 +398,45 @@ class LobbyBot(commands.Cog):
     # ==========================================================
     # COMPREHENSIVE UTILITY COMMANDS: /system-stats, /help, /changelogs
     # ==========================================================
-    @app_commands.command(name="system-stats", description="Displays active latency and bot host metrics.")
+    @app_commands.command(name="system-stats", description="Displays active latency, voice logs, and loaded metrics.")
     async def system_stats(self, interaction: discord.Interaction):
         uptime_seconds = int(time.time() - self.start_time)
         hours, remainder = divmod(uptime_seconds, 3600)
         minutes, seconds = divmod(remainder, 60)
         
-        embed = discord.Embed(title="📊 System Diagnostics", color=discord.Color.gold())
+        # 24/7 Rolling Server Activity Tracker update on query
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        now = time.time()
+        
+        # Insert or update current guilds
+        for guild in self.bot.guilds:
+            cursor.execute('''
+                INSERT OR REPLACE INTO server_daily_tracker (guild_id, last_seen)
+                VALUES (?, ?)
+            ''', (guild.id, now))
+            
+        # Hard wipe any tracking logs older than 24h (86400 seconds)
+        cursor.execute('DELETE FROM server_daily_tracker WHERE last_seen < ?', (now - 86400,))
+        conn.commit()
+        
+        # Grab final active daily count
+        cursor.execute('SELECT COUNT(*) FROM server_daily_tracker')
+        daily_servers_count = cursor.fetchone()[0]
+        conn.close()
+
+        # Fetch persistent total voice creations
+        total_opened_vcs = self.get_stat("total_opened_vcs")
+        total_servers = len(self.bot.guilds)
+
+        embed = discord.Embed(title="📊 LobbyBot Host Diagnostics", color=discord.Color.gold())
         embed.add_field(name="📶 Connection Latency", value=f"`{round(self.bot.latency * 1000)}ms`", inline=True)
         embed.add_field(name="⏱️ System Uptime", value=f"`{hours}h {minutes}m {seconds}s`", inline=True)
-        embed.add_field(name="🌐 Loaded Servers", value=f"`{len(self.bot.guilds)}`", inline=True)
+        embed.add_field(name="🌐 Total Servers", value=f"`{total_servers}` servers", inline=True)
+        embed.add_field(name="🗓️ Daily Servers (24h Live)", value=f"`{daily_servers_count}` active", inline=True)
+        embed.add_field(name="🔊 Total VCs Opened", value=f"`{total_opened_vcs}` channels", inline=True)
         embed.set_footer(text="LobbyBot • Active Diagnostics Core")
+        
         await interaction.response.send_message(embed=embed)
 
     @app_commands.command(name="help", description="Explains exactly how to configure and use the bot's features.")
@@ -496,3 +563,4 @@ class LobbyBot(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(LobbyBot(bot))
+
