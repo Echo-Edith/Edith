@@ -43,7 +43,7 @@ class LobbyBot(commands.Cog):
             )
         ''')
         
-        # New persistent stats tracker table
+        # Persistent stats tracker table
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS stats_tracker (
                 stat_key TEXT PRIMARY KEY,
@@ -51,11 +51,11 @@ class LobbyBot(commands.Cog):
             )
         ''')
 
-        # New rolling 24-hour server tracker table
+        # Rolling 24-hour NEW server tracker table (Tracks additions only)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS server_daily_tracker (
                 guild_id INTEGER PRIMARY KEY,
-                last_seen REAL
+                joined_at REAL
             )
         ''')
         
@@ -396,6 +396,23 @@ class LobbyBot(commands.Cog):
         await ctx.send(response_msg)
 
     # ==========================================================
+    # NEW SERVERS JOIN EVENT LISTENER
+    # ==========================================================
+    @commands.Cog.listener()
+    async def on_guild_join(self, guild: discord.Guild):
+        """Fires when LobbyBot is added to a new server, logging it in our rolling 24h table."""
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        now = time.time()
+        cursor.execute('''
+            INSERT OR REPLACE INTO server_daily_tracker (guild_id, joined_at)
+            VALUES (?, ?)
+        ''', (guild.id, now))
+        conn.commit()
+        conn.close()
+        print(f"📥 LobbyBot added to new server: '{guild.name}' ({guild.id})! Tracked for daily growth stats.")
+
+    # ==========================================================
     # COMPREHENSIVE UTILITY COMMANDS: /system-stats, /help, /changelogs
     # ==========================================================
     @app_commands.command(name="system-stats", description="Displays active latency, voice logs, and loaded metrics.")
@@ -404,28 +421,21 @@ class LobbyBot(commands.Cog):
         hours, remainder = divmod(uptime_seconds, 3600)
         minutes, seconds = divmod(remainder, 60)
         
-        # 24/7 Rolling Server Activity Tracker update on query
+        # 24/7 Rolling New Servers Tracker Update
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
         now = time.time()
         
-        # Insert or update current guilds
-        for guild in self.bot.guilds:
-            cursor.execute('''
-                INSERT OR REPLACE INTO server_daily_tracker (guild_id, last_seen)
-                VALUES (?, ?)
-            ''', (guild.id, now))
-            
-        # Hard wipe any tracking logs older than 24h (86400 seconds)
-        cursor.execute('DELETE FROM server_daily_tracker WHERE last_seen < ?', (now - 86400,))
+        # Purge records of new joins older than 24h (86400 seconds)
+        cursor.execute('DELETE FROM server_daily_tracker WHERE joined_at < ?', (now - 86400,))
         conn.commit()
         
-        # Grab final active daily count
+        # Get count of unique servers added within the last 24 hours
         cursor.execute('SELECT COUNT(*) FROM server_daily_tracker')
-        daily_servers_count = cursor.fetchone()[0]
+        daily_new_servers_count = cursor.fetchone()[0]
         conn.close()
 
-        # Fetch persistent total voice creations
+        # Fetch stats
         total_opened_vcs = self.get_stat("total_opened_vcs")
         total_servers = len(self.bot.guilds)
 
@@ -433,7 +443,7 @@ class LobbyBot(commands.Cog):
         embed.add_field(name="📶 Connection Latency", value=f"`{round(self.bot.latency * 1000)}ms`", inline=True)
         embed.add_field(name="⏱️ System Uptime", value=f"`{hours}h {minutes}m {seconds}s`", inline=True)
         embed.add_field(name="🌐 Total Servers", value=f"`{total_servers}` servers", inline=True)
-        embed.add_field(name="🗓️ Daily Servers (24h Live)", value=f"`{daily_servers_count}` active", inline=True)
+        embed.add_field(name="🆕 New Servers (Daily 24h)", value=f"`+{daily_new_servers_count}` added", inline=True)
         embed.add_field(name="🔊 Total VCs Opened", value=f"`{total_opened_vcs}` channels", inline=True)
         embed.set_footer(text="LobbyBot • Active Diagnostics Core")
         
