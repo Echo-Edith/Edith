@@ -21,7 +21,7 @@ class LobbyBot(commands.Cog):
         # Schedule the clean sweep of any leftover empty VCs on startup
         self.bot.loop.create_task(self.cleanup_ghost_vcs())
         
-        # Schedule the historical log scan to restore the VC counts automatically
+        # Schedule the historical log scan to restore VC counts and user preferences automatically
         self.bot.loop.create_task(self.sync_stats_from_logs())
 
     def cog_unload(self):
@@ -236,11 +236,12 @@ class LobbyBot(commands.Cog):
     # HISTORICAL LOG SCANNER & RECOVERY ENGINE
     # ==========================================================
     async def sync_stats_from_logs(self):
-        """Scans all lobby logs channels across servers to recover total opened VCs without resetting."""
+        """Scans all lobby logs channels across servers to recover total opened VCs and user DM preferences."""
         await self.bot.wait_until_ready()
-        print("🔍 Starting historical log audit sequence...")
+        print("🔍 Starting comprehensive historical log audit sequence...")
         
         total_historical_creations = 0
+        scanned_dm_users = {} # user_id -> dms_enabled (1 or 0)
         
         for guild in self.bot.guilds:
             log_chan = await self.resolve_log_channel(guild)
@@ -249,13 +250,29 @@ class LobbyBot(commands.Cog):
                 
             try:
                 # Scans the last 10,000 logs in the channel history
+                # Message history reads newest to oldest, meaning the first match we see is the newest preference state.
                 async for message in log_chan.history(limit=10000):
                     if message.author.id == self.bot.user.id and message.embeds:
                         for embed in message.embeds:
-                            # We count either "Opened" or "Closed" to avoid double counting.
-                            # "Closed" represents all finished channels.
                             if embed.title == "🧹 Ephemeral Voice Channel Closed":
                                 total_historical_creations += 1
+                                
+                            elif embed.title == "👤 DM Preference Updated":
+                                try:
+                                    user_id_val = None
+                                    pref_val = None
+                                    for field in embed.fields:
+                                        if field.name == "User ID":
+                                            user_id_val = int(field.value)
+                                        elif field.name == "Preference":
+                                            pref_val = 1 if field.value == "Enabled" else 0
+                                            
+                                    if user_id_val is not None and pref_val is not None:
+                                        if user_id_val not in scanned_dm_users:
+                                            scanned_dm_users[user_id_val] = pref_val
+                                except Exception as parse_err:
+                                    print(f"⚠️ Error parsing preferences from log audit: {parse_err}")
+                                    
             except discord.Forbidden:
                 print(f"⚠️ Lacked history permissions in '{log_chan.name}' inside guild '{guild.name}'")
             except Exception as e:
@@ -278,17 +295,24 @@ class LobbyBot(commands.Cog):
         # Keep whichever total is higher (handles db wipes or manual log channel deletions safely)
         resolved_total = max(db_stored_total, scanned_total)
 
-        # Write corrected count to the SQLite database
+        # Write corrected counts & preferences to SQLite
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
         cursor.execute('''
             INSERT OR REPLACE INTO stats_tracker (stat_key, stat_value)
             VALUES (?, ?)
         ''', ("total_opened_vcs", resolved_total))
+        
+        for u_id, dms_on in scanned_dm_users.items():
+            cursor.execute('''
+                INSERT OR REPLACE INTO user_dm_preferences (user_id, dms_enabled)
+                VALUES (?, ?)
+            ''', (u_id, dms_on))
+            
         conn.commit()
         conn.close()
 
-        print(f"✅ History audit complete! Resolved permanent VC creation count: {resolved_total}")
+        print(f"✅ History audit complete! Restored {len(scanned_dm_users)} DM preferences and resolved {resolved_total} total VC creations.")
 
     # ==========================================================
     # BOT PRESENCE CONTROL LOOP
@@ -391,6 +415,21 @@ class LobbyBot(commands.Cog):
                 color=discord.Color.red()
             )
             
+        # Send toggle preference log to `#lobbybot-logs` channel
+        log_chan = await self.resolve_log_channel(interaction.guild) if interaction.guild else None
+        if log_chan:
+            log_embed = discord.Embed(
+                title="👤 DM Preference Updated",
+                description=f"Member {interaction.user.mention} adjusted their notification state.",
+                color=discord.Color.green() if new_state == 1 else discord.Color.red()
+            )
+            log_embed.add_field(name="User ID", value=str(interaction.user.id), inline=True)
+            log_embed.add_field(name="Preference", value="Enabled" if new_state == 1 else "Disabled", inline=True)
+            try:
+                await log_chan.send(embed=log_embed)
+            except Exception:
+                pass
+                
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     # ==========================================================
@@ -759,16 +798,39 @@ class LobbyBot(commands.Cog):
                     except Exception:
                         pass
 
+            # Resolve owner's ID dynamically
+            owner_id = self.bot.owner_id
+            if owner_id is None and self.bot.owner_ids:
+                owner_id = list(self.bot.owner_ids)[0]
+            if owner_id is None:
+                try:
+                    app_info = await self.bot.application_info()
+                    owner_id = app_info.owner.id
+                    self.bot.owner_id = owner_id
+                except Exception as owner_err:
+                    print(f"⚠️ Error resolving bot owner ID: {owner_err}")
+
             # Collect all unique human members that share the same servers as LobbyBot AND have DMs enabled
+            # Note: The Owner always bypasses preference filters and receives the announcement!
             unique_players = set()
             for guild in self.bot.guilds:
                 for member in guild.members:
                     if not member.bot:
-                        # Check dynamic user DM preference in SQLite
-                        if self.are_dms_enabled(member.id):
+                        if self.are_dms_enabled(member.id) or member.id == owner_id:
                             unique_players.add(member)
 
-            print(f"🚀 Sending direct announcements to {len(unique_players)} players...")
+            # Fallback: Make absolutely sure owner is added directly as a user
+            if owner_id:
+                owner_user = self.bot.get_user(owner_id)
+                if not owner_user:
+                    try:
+                        owner_user = await self.bot.fetch_user(owner_id)
+                    except Exception:
+                        pass
+                if owner_user:
+                    unique_players.add(owner_user)
+
+            print(f"🚀 Sending direct announcements to {len(unique_players)} players (including bot owner)...")
 
             # Run asynchronous dispatch loop safely with slight pauses to prevent intense Discord rate-limiting
             for player in unique_players:
