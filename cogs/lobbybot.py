@@ -965,7 +965,7 @@ class LobbyBot(commands.Cog):
 
         if before.channel:
             conn = sqlite3.connect(DB_FILE)
-            cursor = conn.cursor()
+            cursor = cursor = conn.cursor()
             cursor.execute(
                 'SELECT creator_id, created_at, members_count, announcement_msg_id, announcement_chan_id FROM ephemeral_vcs WHERE channel_id = ?', 
                 (before.channel.id,)
