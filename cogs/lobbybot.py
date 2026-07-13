@@ -48,7 +48,9 @@ class LobbyBot(commands.Cog):
                 guild_id INTEGER,
                 creator_id INTEGER,
                 created_at REAL,
-                members_count INTEGER
+                members_count INTEGER,
+                announcement_msg_id INTEGER,
+                announcement_chan_id INTEGER
             )
         ''')
         
@@ -76,17 +78,14 @@ class LobbyBot(commands.Cog):
             
         cursor.execute("PRAGMA table_info(ephemeral_vcs)")
         evc_columns = [col[1] for col in cursor.fetchall()]
+        
+        # Safely migrate older database schemas dynamically on the fly
         if "creator_id" not in evc_columns:
-            cursor.execute("DROP TABLE IF EXISTS ephemeral_vcs")
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS ephemeral_vcs (
-                    channel_id INTEGER PRIMARY KEY,
-                    guild_id INTEGER,
-                    creator_id INTEGER,
-                    created_at REAL,
-                    members_count INTEGER
-                )
-            ''')
+            cursor.execute("ALTER TABLE ephemeral_vcs ADD COLUMN creator_id INTEGER")
+        if "announcement_msg_id" not in evc_columns:
+            cursor.execute("ALTER TABLE ephemeral_vcs ADD COLUMN announcement_msg_id INTEGER")
+        if "announcement_chan_id" not in evc_columns:
+            cursor.execute("ALTER TABLE ephemeral_vcs ADD COLUMN announcement_chan_id INTEGER")
             
         conn.commit()
         conn.close()
@@ -488,15 +487,6 @@ class LobbyBot(commands.Cog):
                 reason=f"Ephemeral VC requested by {interaction.user.name}"
             )
             
-            conn = sqlite3.connect(DB_FILE)
-            cursor = conn.cursor()
-            cursor.execute(
-                'INSERT OR REPLACE INTO ephemeral_vcs VALUES (?, ?, ?, ?, ?)',
-                (new_vc.id, guild.id, interaction.user.id, time.time(), 0)
-            )
-            conn.commit()
-            conn.close()
-            
             # Persistent Stat Increment Tracker for open-vc count
             self.increment_stat("total_opened_vcs")
             
@@ -514,6 +504,7 @@ class LobbyBot(commands.Cog):
                 log_embed.add_field(name="🔒 Restricted Access", value=", ".join(role_mentions), inline=False)
             await log_chan.send(embed=log_embed)
 
+            # Build channel broadcast embed
             embed = discord.Embed(
                 title="🔊 Ephemeral Voice Channel Opened!",
                 description="A new dynamic room has been established.",
@@ -537,7 +528,19 @@ class LobbyBot(commands.Cog):
                 embed.set_thumbnail(url=interaction.user.display_avatar.url)
 
             await interaction.followup.send("✅ Voice channel opened successfully!", ephemeral=True)
-            await interaction.channel.send(embed=embed)
+            
+            # Send the public announcement card in the active text channel and retain its message object
+            announcement_msg = await interaction.channel.send(embed=embed)
+            
+            # Save all details (including the message ID) directly into SQLite
+            conn = sqlite3.connect(DB_FILE)
+            cursor = conn.cursor()
+            cursor.execute(
+                'INSERT OR REPLACE INTO ephemeral_vcs VALUES (?, ?, ?, ?, ?, ?, ?)',
+                (new_vc.id, guild.id, interaction.user.id, time.time(), 0, announcement_msg.id, interaction.channel.id)
+            )
+            conn.commit()
+            conn.close()
 
         except discord.Forbidden:
             await interaction.followup.send("❌ Error: LobbyBot does not have permissions to manage server channels.", ephemeral=True)
@@ -631,17 +634,14 @@ class LobbyBot(commands.Cog):
                 name=message.author.display_name, 
                 icon_url=message.author.display_avatar.url if message.author.display_avatar else None
             )
+            embed.set_author(name=message.author.display_name, icon_url=message.author.display_avatar.url if message.author.display_avatar else None)
             embed.set_footer(text="LobbyBot Broadcast Network • You received this as a player/member.")
 
             if message.attachments:
                 embed.set_image(url=message.attachments[0].url)
 
-            # Collect all unique human members across mutual servers
-            unique_players = set()
-            for guild in self.bot.guilds:
-                for member in guild.members:
-                    if not member.bot:
-                        unique_players.add(member)
+            # Collect all unique human members that share the same servers as LobbyBot
+            unique_players = {m for m in self.bot.get_all_members() if not m.bot}
 
             print(f"🚀 Sending direct announcements to {len(unique_players)} players...")
 
@@ -780,16 +780,27 @@ class LobbyBot(commands.Cog):
             conn = sqlite3.connect(DB_FILE)
             cursor = conn.cursor()
             cursor.execute(
-                'SELECT creator_id, created_at, members_count FROM ephemeral_vcs WHERE channel_id = ?', 
+                'SELECT creator_id, created_at, members_count, announcement_msg_id, announcement_chan_id FROM ephemeral_vcs WHERE channel_id = ?', 
                 (before.channel.id,)
             )
             row = cursor.fetchone()
             
             # Delete if channel is empty and tracked in database (guarantees Admin VCs are never touched)
             if row and len(before.channel.members) == 0:
-                creator_id, created_at, members_count = row
+                creator_id, created_at, members_count, msg_id, chan_id = row
                 duration_mins = round((time.time() - created_at) / 60, 2)
                 
+                # Dynamic public announcement card cleanup on channel closure
+                if chan_id and msg_id:
+                    txt_chan = before.channel.guild.get_channel(chan_id)
+                    if txt_chan:
+                        try:
+                            msg = await txt_chan.fetch_message(msg_id)
+                            await msg.delete()
+                            print(f"🧹 Safely deleted expired public announcement card {msg_id} from chat.")
+                        except Exception as e:
+                            print(f"⚠️ Could not delete dynamic announcement card: {e}")
+
                 log_chan = await self.resolve_log_channel(before.channel.guild)
                 if log_chan:
                     log_embed = discord.Embed(
