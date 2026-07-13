@@ -384,7 +384,7 @@ class LobbyBot(commands.Cog):
         await interaction.response.send_message(msg, ephemeral=True)
 
     # ==========================================================
-    # HIGH-PERFORMANCE /OPEN-VC 
+    # HIGH-PERFORMANCE /OPEN-VC (LOG MANDATORY GUARD INCLUDED)
     # ==========================================================
     @app_commands.command(
         name="open-vc",
@@ -406,6 +406,22 @@ class LobbyBot(commands.Cog):
     ):
         guild = interaction.guild
         await interaction.response.defer(ephemeral=True)
+
+        # ------------------------------------------------------
+        # MANDATORY LOG SYSTEM GUARD CHECK
+        # ------------------------------------------------------
+        log_chan = await self.resolve_log_channel(guild)
+        if not log_chan:
+            embed = discord.Embed(
+                title="⚠️ Setup Required",
+                description=(
+                    "❌ **Voice channel creation is currently locked!**\n\n"
+                    "LobbyBot requires an initialized administrative log channel to track dynamic rooms.\n"
+                    "Please ask a Server Administrator to run the **/setup-logs** command first!"
+                ),
+                color=discord.Color.red()
+            )
+            return await interaction.followup.send(embed=embed, ephemeral=True)
 
         config = self.get_vc_config(guild.id)
         restricted_mode = config["restricted_mode"]
@@ -484,21 +500,19 @@ class LobbyBot(commands.Cog):
             # Persistent Stat Increment Tracker for open-vc count
             self.increment_stat("total_opened_vcs")
             
-            # Audit Opening event directly in log channel
-            log_chan = await self.resolve_log_channel(guild)
-            if log_chan:
-                log_embed = discord.Embed(
-                    title="🔊 Ephemeral Voice Channel Opened",
-                    description="A new dynamic room has been established.",
-                    color=discord.Color.green()
-                )
-                log_embed.add_field(name="🏷️ Name", value=f"`{new_vc.name}`", inline=True)
-                log_embed.add_field(name="👑 Creator", value=interaction.user.mention, inline=True)
-                log_embed.add_field(name="👥 Capacity Limit", value="Unlimited" if clean_limit == 0 else f"`{clean_limit}`", inline=True)
-                if allowed_roles:
-                    role_mentions = [r.mention for r in allowed_roles]
-                    log_embed.add_field(name="🔒 Restricted Access", value=", ".join(role_mentions), inline=False)
-                await log_chan.send(embed=log_embed)
+            # Audit Opening event directly in log channel (already guaranteed to exist!)
+            log_embed = discord.Embed(
+                title="🔊 Ephemeral Voice Channel Opened",
+                description="A new dynamic room has been established.",
+                color=discord.Color.green()
+            )
+            log_embed.add_field(name="🏷️ Name", value=f"`{new_vc.name}`", inline=True)
+            log_embed.add_field(name="👑 Creator", value=interaction.user.mention, inline=True)
+            log_embed.add_field(name="👥 Capacity Limit", value="Unlimited" if clean_limit == 0 else f"`{clean_limit}`", inline=True)
+            if allowed_roles:
+                role_mentions = [r.mention for r in allowed_roles]
+                log_embed.add_field(name="🔒 Restricted Access", value=", ".join(role_mentions), inline=False)
+            await log_chan.send(embed=log_embed)
 
             embed = discord.Embed(
                 title="🔊 Ephemeral Voice Channel Opened!",
