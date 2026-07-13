@@ -15,7 +15,7 @@ class LobbyBotClient(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
 
     async def setup_hook(self):
-        # Dynamically load the updated cogs from your directory
+        # Dynamically load the updated cogs matching your cogs folder directory
         extensions = ['cogs.lobbybot', 'cogs.lobbytools']
         for ext in extensions:
             try:
