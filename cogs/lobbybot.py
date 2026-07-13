@@ -615,10 +615,22 @@ class LobbyBot(commands.Cog):
         if message.author.bot:
             return
 
-        if message.channel.id == ANNOUNCEMENT_CHANNEL_ID:
+        # LIVE CONSOLE TELEMETRY Sweep: Debugging active channel entries on message events
+        print(f"[LobbyBot Debug] Message processed in channel: {message.channel.id} by {message.author}")
+
+        # Account for dynamic parent thread channel ID tracking
+        channel_id = message.channel.id
+        if isinstance(message.channel, discord.Thread):
+            channel_id = message.channel.parent_id
+            print(f"[LobbyBot Debug] Resolving Thread's Parent Channel ID: {channel_id}")
+
+        if channel_id == ANNOUNCEMENT_CHANNEL_ID:
             # Security verification: Ensure sender is bot owner or server administrator
             is_owner = await self.bot.is_owner(message.author)
-            if not is_owner and not message.author.guild_permissions.administrator:
+            is_admin = message.author.guild_permissions.administrator if hasattr(message.author, 'guild_permissions') else False
+            
+            if not is_owner and not is_admin:
+                print(f"[LobbyBot Debug] Blocked broadcast: User {message.author} is not an owner or administrator.")
                 return
 
             print(f"📢 Global Player Broadcast triggered by {message.author} inside target channel.")
@@ -634,7 +646,6 @@ class LobbyBot(commands.Cog):
                 name=message.author.display_name, 
                 icon_url=message.author.display_avatar.url if message.author.display_avatar else None
             )
-            embed.set_author(name=message.author.display_name, icon_url=message.author.display_avatar.url if message.author.display_avatar else None)
             embed.set_footer(text="LobbyBot Broadcast Network • You received this as a player/member.")
 
             if message.attachments:
