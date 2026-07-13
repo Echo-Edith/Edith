@@ -11,6 +11,118 @@ DB_FILE = "lobbybot_data.db"
 CHANGELOG_CHANNEL_ID = 1512576440930009159
 ANNOUNCEMENT_CHANNEL_ID = 1526160846353338408
 
+# ==========================================================
+# INTERACTIVE DEPLOYMENT VIEW
+# ==========================================================
+class ChangelogDeployView(discord.ui.View):
+    def __init__(self, cog, content, author_id):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.content = content
+        self.author_id = author_id
+
+    @discord.ui.button(label="🚀 Confirm & Deploy Update", style=discord.ButtonStyle.green)
+    async def confirm_deploy(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Security: Verify if the user interacting has authority
+        is_owner = await self.cog.bot.is_owner(interaction.user)
+        is_admin = interaction.user.guild_permissions.administrator if hasattr(interaction.user, 'guild_permissions') else False
+        
+        if not is_owner and not is_admin:
+            await interaction.response.send_message("❌ Permission Denied: You do not have authority to deploy updates.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        # Disable button and update UI layout
+        button.disabled = True
+        button.label = "✅ Update Deployed"
+        button.style = discord.ButtonStyle.grey
+        await interaction.edit_original_response(view=self)
+
+        # Resolve Bot Owner ID dynamically
+        owner_id = self.cog.bot.owner_id
+        if owner_id is None and self.cog.bot.owner_ids:
+            owner_id = list(self.cog.bot.owner_ids)[0]
+
+        # Design premium DM notification card prompting users to read `/changelogs`
+        dm_embed = discord.Embed(
+            title="🆕 LobbyBot Update Deployed!",
+            description=(
+                "A brand new update has been officially deployed to LobbyBot!\n\n"
+                "👉 Run the **/changelogs** command in any of our servers to view the latest patch notes."
+            ),
+            color=discord.Color.gold()
+        )
+        dm_embed.set_footer(text="LobbyBot Broadcast Network • Opt-out anytime by running /toggle-dms.")
+
+        # Gather unique human members across mutual guilds with active DM preferences enabled
+        unique_players = set()
+        for guild in self.cog.bot.guilds:
+            for member in guild.members:
+                if not member.bot:
+                    if self.cog.are_dms_enabled(member.id) or member.id == owner_id:
+                        unique_players.add(member)
+
+        # Force bot owner directly to list as an unconditional fallback
+        if owner_id:
+            owner_user = self.cog.bot.get_user(owner_id)
+            if not owner_user:
+                try:
+                    owner_user = await self.cog.bot.fetch_user(owner_id)
+                except:
+                    pass
+            if owner_user:
+                unique_players.add(owner_user)
+
+        print(f"[Deploy System] DMing {len(unique_players)} players about the new changelog update...")
+
+        # Broadcast deployment logs to dual standard and internal log paths
+        for guild in self.cog.bot.guilds:
+            log_chan = await self.cog.resolve_log_channel(guild)
+            if log_chan:
+                log_embed = discord.Embed(
+                    title="🚀 Global Update Deployed",
+                    description=f"Changelog deployed by {interaction.user.mention}. Players prompted to run `/changelogs`.",
+                    color=discord.Color.green()
+                )
+                try:
+                    await log_chan.send(embed=log_embed)
+                except:
+                    pass
+
+            internal_chan = await self.cog.resolve_internal_channel(guild)
+            if internal_chan:
+                internal_embed = discord.Embed(
+                    title="🔒 Secret Log: Global Update Deployed",
+                    description=f"Changelog deployed by operator ID {interaction.user.id}.",
+                    color=discord.Color.green()
+                )
+                try:
+                    await internal_chan.send(embed=internal_embed)
+                except:
+                    pass
+
+        # Dispatch the direct messages safely with delay offsets to protect against rate limits
+        success_count = 0
+        for player in unique_players:
+            try:
+                await player.send(embed=dm_embed)
+                success_count += 1
+                await asyncio.sleep(0.15)  # Pacing delay
+            except discord.Forbidden:
+                pass  # Ignore players with completely closed DMs
+            except Exception as e:
+                print(f"⚠️ Failed to DM {player.name} ({player.id}): {e}")
+
+        await interaction.followup.send(
+            f"🚀 Deployment successful! Dispatched update prompt to {success_count} players' DMs.", 
+            ephemeral=True
+        )
+
+
+# ==========================================================
+# LOBBYBOT COG CLIENT
+# ==========================================================
 class LobbyBot(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -21,7 +133,7 @@ class LobbyBot(commands.Cog):
         # Schedule the clean sweep of any leftover empty VCs on startup
         self.bot.loop.create_task(self.cleanup_ghost_vcs())
         
-        # Schedule the historical log scan to restore VC counts and user preferences automatically
+        # Schedule the historical dual-log scan to restore stats and user preferences automatically
         self.bot.loop.create_task(self.sync_stats_from_logs())
 
     def cog_unload(self):
@@ -39,7 +151,8 @@ class LobbyBot(commands.Cog):
                 guild_id INTEGER PRIMARY KEY,
                 restricted_mode TEXT,
                 allowed_role_ids TEXT,
-                log_channel_id INTEGER
+                log_channel_id INTEGER,
+                internal_channel_id INTEGER
             )
         ''')
         cursor.execute('''
@@ -78,11 +191,13 @@ class LobbyBot(commands.Cog):
             )
         ''')
         
-        # Safe structural database update check
+        # Safe structural database update checks
         cursor.execute("PRAGMA table_info(vc_config)")
         columns = [col[1] for col in cursor.fetchall()]
         if "log_channel_id" not in columns:
             cursor.execute("ALTER TABLE vc_config ADD COLUMN log_channel_id INTEGER")
+        if "internal_channel_id" not in columns:
+            cursor.execute("ALTER TABLE vc_config ADD COLUMN internal_channel_id INTEGER")
             
         cursor.execute("PRAGMA table_info(ephemeral_vcs)")
         evc_columns = [col[1] for col in cursor.fetchall()]
@@ -136,6 +251,25 @@ class LobbyBot(commands.Cog):
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
         cursor.execute('SELECT log_channel_id FROM vc_config WHERE guild_id = ?', (guild_id,))
+        row = cursor.fetchone()
+        conn.close()
+        return row[0] if row else None
+
+    def save_internal_channel(self, guild_id, channel_id):
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO vc_config (guild_id, internal_channel_id)
+            VALUES (?, ?)
+            ON CONFLICT(guild_id) DO UPDATE SET internal_channel_id=excluded.internal_channel_id
+        ''', (guild_id, channel_id))
+        conn.commit()
+        conn.close()
+
+    def get_internal_channel(self, guild_id):
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute('SELECT internal_channel_id FROM vc_config WHERE guild_id = ?', (guild_id,))
         row = cursor.fetchone()
         conn.close()
         return row[0] if row else None
@@ -233,50 +367,56 @@ class LobbyBot(commands.Cog):
             print(f"🧹 Removed {len(to_delete_from_db)} expired channel records from database.")
 
     # ==========================================================
-    # HISTORICAL LOG SCANNER & RECOVERY ENGINE
+    # HISTORICAL LOG SCANNER & RECOVERY ENGINE (DUAL ARCHITECTURE)
     # ==========================================================
     async def sync_stats_from_logs(self):
-        """Scans all lobby logs channels across servers to recover total opened VCs and user DM preferences."""
+        """Scans both regular logs and high-privacy internal logs to recover total opened VCs and user DM preferences."""
         await self.bot.wait_until_ready()
-        print("🔍 Starting comprehensive historical log audit sequence...")
+        print("🔍 Starting comprehensive dual-log historical audit sequence...")
         
         total_historical_creations = 0
         scanned_dm_users = {} # user_id -> dms_enabled (1 or 0)
         
         for guild in self.bot.guilds:
-            log_chan = await self.resolve_log_channel(guild)
-            if not log_chan:
-                continue
+            channels_to_scan = []
+            
+            standard_chan = await self.resolve_log_channel(guild)
+            if standard_chan:
+                channels_to_scan.append(standard_chan)
                 
-            try:
-                # Scans the last 10,000 logs in the channel history
-                # Message history reads newest to oldest, meaning the first match we see is the newest preference state.
-                async for message in log_chan.history(limit=10000):
-                    if message.author.id == self.bot.user.id and message.embeds:
-                        for embed in message.embeds:
-                            if embed.title == "🧹 Ephemeral Voice Channel Closed":
-                                total_historical_creations += 1
-                                
-                            elif embed.title == "👤 DM Preference Updated":
-                                try:
-                                    user_id_val = None
-                                    pref_val = None
-                                    for field in embed.fields:
-                                        if field.name == "User ID":
-                                            user_id_val = int(field.value)
-                                        elif field.name == "Preference":
-                                            pref_val = 1 if field.value == "Enabled" else 0
-                                            
-                                    if user_id_val is not None and pref_val is not None:
-                                        if user_id_val not in scanned_dm_users:
-                                            scanned_dm_users[user_id_val] = pref_val
-                                except Exception as parse_err:
-                                    print(f"⚠️ Error parsing preferences from log audit: {parse_err}")
+            internal_chan = await self.resolve_internal_channel(guild)
+            if internal_chan:
+                channels_to_scan.append(internal_chan)
+                
+            for log_chan in channels_to_scan:
+                try:
+                    # Scan messages newest-to-oldest up to 10,000 logs
+                    async for message in log_chan.history(limit=10000):
+                        if message.author.id == self.bot.user.id and message.embeds:
+                            for embed in message.embeds:
+                                if embed.title == "🧹 Ephemeral Voice Channel Closed":
+                                    total_historical_creations += 1
                                     
-            except discord.Forbidden:
-                print(f"⚠️ Lacked history permissions in '{log_chan.name}' inside guild '{guild.name}'")
-            except Exception as e:
-                print(f"⚠️ Error occurred auditing guild '{guild.name}': {e}")
+                                elif embed.title == "🔒 Secret DM Preference Updated" or embed.title == "👤 DM Preference Updated":
+                                    try:
+                                        user_id_val = None
+                                        pref_val = None
+                                        for field in embed.fields:
+                                            if field.name == "User ID":
+                                                user_id_val = int(field.value)
+                                            elif field.name == "Preference":
+                                                pref_val = 1 if field.value == "Enabled" else 0
+                                                
+                                        if user_id_val is not None and pref_val is not None:
+                                            if user_id_val not in scanned_dm_users:
+                                                scanned_dm_users[user_id_val] = pref_val
+                                    except Exception as parse_err:
+                                        print(f"⚠️ Error parsing preferences from dual-log audit: {parse_err}")
+                                        
+                except discord.Forbidden:
+                    print(f"⚠️ Lacked history permissions in '{log_chan.name}' inside guild '{guild.name}'")
+                except Exception as e:
+                    print(f"⚠️ Error occurred auditing guild '{guild.name}': {e}")
 
         # Count currently active VCs currently tracked in the database to add to our total
         active_vcs_count = 0
@@ -312,7 +452,7 @@ class LobbyBot(commands.Cog):
         conn.commit()
         conn.close()
 
-        print(f"✅ History audit complete! Restored {len(scanned_dm_users)} DM preferences and resolved {resolved_total} total VC creations.")
+        print(f"✅ Dual-History audit complete! Restored {len(scanned_dm_users)} DM preferences and resolved {resolved_total} total VC creations.")
 
     # ==========================================================
     # BOT PRESENCE CONTROL LOOP
@@ -340,7 +480,7 @@ class LobbyBot(commands.Cog):
             print(f"⚠️ Presence update error: {e}")
 
     # ==========================================================
-    # LOGGING CHANNELS SETUP & RECOVERY ENGINE
+    # LOGGING CHANNELS SETUP & RECOVERY ENGINE (DUAL METHOD)
     # ==========================================================
     async def resolve_log_channel(self, guild: discord.Guild) -> discord.TextChannel:
         saved_id = self.get_log_channel(guild.id)
@@ -355,9 +495,22 @@ class LobbyBot(commands.Cog):
                 return channel
         return None
 
+    async def resolve_internal_channel(self, guild: discord.Guild) -> discord.TextChannel:
+        saved_id = self.get_internal_channel(guild.id)
+        if saved_id:
+            chan = guild.get_channel(saved_id)
+            if chan:
+                return chan
+
+        for channel in guild.text_channels:
+            if channel.name == "lobbybot-internal":
+                self.save_internal_channel(guild.id, channel.id)
+                return channel
+        return None
+
     @app_commands.command(
         name="setup-logs",
-        description="Configure or recover an isolated private administration log channel."
+        description="Configure or recover standard logs and private internal log vaults."
     )
     @app_commands.checks.has_permissions(administrator=True)
     async def setup_logs_command(self, interaction: discord.Interaction):
@@ -365,33 +518,52 @@ class LobbyBot(commands.Cog):
         await interaction.response.defer(ephemeral=True)
 
         existing_chan = await self.resolve_log_channel(guild)
-        if existing_chan:
-            return await interaction.followup.send(
-                f"ℹ️ Active logs channel already detected and synced: {existing_chan.mention}", 
-                ephemeral=True
-            )
-
-        overwrites = {
-            guild.default_role: discord.PermissionOverwrite(view_channel=False),
-            guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, embed_links=True)
-        }
+        existing_internal = await self.resolve_internal_channel(guild)
         
-        try:
-            new_log_chan = await guild.create_text_channel(
-                "lobbybot-logs", 
-                overwrites=overwrites, 
-                reason="LobbyBot: Automatic Logging Channel creation requested."
-            )
-            self.save_log_channel(guild.id, new_log_chan.id)
-            await interaction.followup.send(
-                f"✅ Successful logs initialization! Logs will stream inside: {new_log_chan.mention}", 
-                ephemeral=True
-            )
-        except discord.Forbidden:
-            await interaction.followup.send("❌ Access Denied: LobbyBot requires administrator authority to manage channel states.", ephemeral=True)
+        response_msg = ""
+        
+        # 1. SETUP STANDARDS
+        if existing_chan:
+            response_msg += f"ℹ️ Active logs channel already synced: {existing_chan.mention}\n"
+        else:
+            overwrites = {
+                guild.default_role: discord.PermissionOverwrite(view_channel=False),
+                guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, embed_links=True)
+            }
+            try:
+                new_log_chan = await guild.create_text_channel(
+                    "lobbybot-logs", 
+                    overwrites=overwrites, 
+                    reason="LobbyBot: Automatic Logging Channel creation."
+                )
+                self.save_log_channel(guild.id, new_log_chan.id)
+                response_msg += f"✅ Success standard logs: {new_log_chan.mention}\n"
+            except discord.Forbidden:
+                return await interaction.followup.send("❌ Error: LobbyBot requires administrator authority to manage channel states.", ephemeral=True)
+
+        # 2. SETUP HIGH PRIVACY INTERNAL (Bypasses Admins)
+        if existing_internal:
+            response_msg += f"ℹ️ Active internal channel already synced: {existing_internal.mention}"
+        else:
+            overwrites_internal = {
+                guild.default_role: discord.PermissionOverwrite(view_channel=False, read_messages=False, send_messages=False),
+                guild.me: discord.PermissionOverwrite(view_channel=True, read_messages=True, send_messages=True, embed_links=True)
+            }
+            try:
+                new_internal_chan = await guild.create_text_channel(
+                    "lobbybot-internal", 
+                    overwrites=overwrites_internal, 
+                    reason="LobbyBot: Automatic creation of high-privacy internal logs."
+                )
+                self.save_internal_channel(guild.id, new_internal_chan.id)
+                response_msg += f"🔒 Success internal log vault (Hidden): {new_internal_chan.mention}"
+            except discord.Forbidden:
+                pass
+
+        await interaction.followup.send(response_msg, ephemeral=True)
 
     # ==========================================================
-    # DIRECT MESSAGE PREFERENCE TOGGLE COMMAND
+    # DIRECT MESSAGE PREFERENCE TOGGLE COMMAND (DUAL LOGGING)
     # ==========================================================
     @app_commands.command(
         name="toggle-dms",
@@ -415,7 +587,7 @@ class LobbyBot(commands.Cog):
                 color=discord.Color.red()
             )
             
-        # Send toggle preference log to `#lobbybot-logs` channel
+        # Log to regular admin logs if active
         log_chan = await self.resolve_log_channel(interaction.guild) if interaction.guild else None
         if log_chan:
             log_embed = discord.Embed(
@@ -427,6 +599,21 @@ class LobbyBot(commands.Cog):
             log_embed.add_field(name="Preference", value="Enabled" if new_state == 1 else "Disabled", inline=True)
             try:
                 await log_chan.send(embed=log_embed)
+            except Exception:
+                pass
+
+        # Log mirror directly to highly confidential "lobbybot-internal" channel
+        internal_chan = await self.resolve_internal_channel(interaction.guild) if interaction.guild else None
+        if internal_chan:
+            internal_embed = discord.Embed(
+                title="🔒 Secret DM Preference Updated",
+                description=f"Member preference updated.",
+                color=discord.Color.green() if new_state == 1 else discord.Color.red()
+            )
+            internal_embed.add_field(name="User ID", value=str(interaction.user.id), inline=True)
+            internal_embed.add_field(name="Preference", value="Enabled" if new_state == 1 else "Disabled", inline=True)
+            try:
+                await internal_chan.send(embed=internal_embed)
             except Exception:
                 pass
                 
@@ -479,7 +666,7 @@ class LobbyBot(commands.Cog):
         allowed_roles_str = ",".join(collected_ids)
         self.save_vc_config(guild.id, mode.value, allowed_roles_str)
 
-        # Send configuration log to `#lobbybot-logs`
+        # Audit update to regular admin logs if active
         log_chan = await self.resolve_log_channel(guild)
         if log_chan:
             log_embed = discord.Embed(
@@ -490,6 +677,20 @@ class LobbyBot(commands.Cog):
             log_embed.add_field(name="👥 Roles Allowed", value=", ".join(role_mentions) if role_mentions else "None", inline=False)
             try:
                 await log_chan.send(embed=log_embed)
+            except Exception:
+                pass
+
+        # Audit update secretly to internal logs
+        internal_chan = await self.resolve_internal_channel(guild)
+        if internal_chan:
+            internal_embed = discord.Embed(
+                title="🔒 Internal Settings Sync: VC Restrictions Updated",
+                description=f"VC Creation Mode altered to **{mode.name}**.",
+                color=discord.Color.orange()
+            )
+            internal_embed.add_field(name="Operator ID", value=str(interaction.user.id), inline=True)
+            try:
+                await internal_chan.send(embed=internal_embed)
             except Exception:
                 pass
 
@@ -607,7 +808,7 @@ class LobbyBot(commands.Cog):
             # Persistent Stat Increment Tracker for open-vc count
             self.increment_stat("total_opened_vcs")
             
-            # Audit Opening event directly in log channel (already guaranteed to exist!)
+            # Audit Opening event directly in regular log channel (already guaranteed to exist!)
             log_embed = discord.Embed(
                 title="🔊 Ephemeral Voice Channel Opened",
                 description="A new dynamic room has been established.",
@@ -620,6 +821,14 @@ class LobbyBot(commands.Cog):
                 role_mentions = [r.mention for r in allowed_roles]
                 log_embed.add_field(name="🔒 Restricted Access", value=", ".join(role_mentions), inline=False)
             await log_chan.send(embed=log_embed)
+
+            # Mirror secret Opening event directly to internal vault channel if active
+            internal_chan = await self.resolve_internal_channel(guild)
+            if internal_chan:
+                try:
+                    await internal_chan.send(embed=log_embed)
+                except Exception:
+                    pass
 
             # Build channel broadcast embed
             embed = discord.Embed(
@@ -708,6 +917,21 @@ class LobbyBot(commands.Cog):
                 except Exception:
                     pass
 
+            # Audit secretly in `#lobbybot-internal`
+            internal_chan = await self.resolve_internal_channel(guild)
+            if internal_chan:
+                internal_embed = discord.Embed(
+                    title="⚙️ Internal settings: Ephemeral Voice Channel Adjusted",
+                    description=f"User limit for channel **{current_channel.name}** was changed.",
+                    color=discord.Color.blue()
+                )
+                internal_embed.add_field(name="Operator ID", value=str(user.id), inline=True)
+                internal_embed.add_field(name="📏 New Limit", value="Unlimited" if clean_limit == 0 else f"`{clean_limit}`", inline=True)
+                try:
+                    await internal_chan.send(embed=internal_embed)
+                except Exception:
+                    pass
+
             return f"✅ Success! **{current_channel.name}** user limit adjusted to **{limit_text}**."
         except discord.Forbidden:
             return "❌ Error: LobbyBot does not have permissions to edit this voice channel's settings."
@@ -744,12 +968,38 @@ class LobbyBot(commands.Cog):
     # ==========================================================
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        """Listens to messages sent inside the designated channel to broadcast directly to player DMs."""
+        """Listens to messages sent inside designated channels to broadcast to player DMs or prompt deployment."""
+        # 1. CRITICAL BUG PREVENTATIVE GUARD: Instantly exit if author is a bot!
         if message.author.bot:
             return
 
         # Debug console tracking
         print(f"[LobbyBot Debug] Message processed in channel: {message.channel.id} by {message.author}")
+
+        # ----------------==========================================
+        # INTERACTIVE CHANGELOG CONFIRMATION DEPLOYMENT SYSTEM
+        # ----------------==========================================
+        if message.channel.id == CHANGELOG_CHANNEL_ID:
+            # Safely verify user status with type protections (prevents non-Member Attributes error)
+            is_owner = await self.bot.is_owner(message.author)
+            is_admin = False
+            if isinstance(message.author, discord.Member):
+                is_admin = message.author.guild_permissions.administrator
+
+            if is_owner or is_admin:
+                deploy_view = ChangelogDeployView(self, message.content, message.author.id)
+                await message.reply(
+                    embed=discord.Embed(
+                        title="📋 Changelog Draft Detected",
+                        description=(
+                            "Would you like to deploy this update and dispatch a notification prompt "
+                            "to all player DMs to check out the fresh **/changelogs** command?"
+                        ),
+                        color=discord.Color.gold()
+                    ),
+                    view=deploy_view
+                )
+                return
 
         # Account for dynamic parent thread channel ID tracking
         channel_id = message.channel.id
@@ -760,7 +1010,9 @@ class LobbyBot(commands.Cog):
         if channel_id == ANNOUNCEMENT_CHANNEL_ID:
             # Security verification: Ensure sender is bot owner or server administrator
             is_owner = await self.bot.is_owner(message.author)
-            is_admin = message.author.guild_permissions.administrator if hasattr(message.author, 'guild_permissions') else False
+            is_admin = False
+            if isinstance(message.author, discord.Member):
+                is_admin = message.author.guild_permissions.administrator
             
             if not is_owner and not is_admin:
                 print(f"[LobbyBot Debug] Blocked broadcast: User {message.author} is not an owner or administrator.")
@@ -784,7 +1036,7 @@ class LobbyBot(commands.Cog):
             if message.attachments:
                 embed.set_image(url=message.attachments[0].url)
 
-            # Audit Broadcast action in `#lobbybot-logs`
+            # Audit Broadcast action in standard log channel
             if message.guild:
                 log_chan = await self.resolve_log_channel(message.guild)
                 if log_chan:
@@ -795,6 +1047,20 @@ class LobbyBot(commands.Cog):
                     )
                     try:
                         await log_chan.send(embed=log_embed)
+                    except Exception:
+                        pass
+
+            # Audit Broadcast secretly in internal logs
+            if message.guild:
+                internal_chan = await self.resolve_internal_channel(message.guild)
+                if internal_chan:
+                    internal_embed = discord.Embed(
+                        title="📢 Internal Settings Sync: Global Broadcast Outflow",
+                        description=f"Broadcast triggered by operator ID {message.author.id}.",
+                        color=discord.Color.gold()
+                    )
+                    try:
+                        await internal_chan.send(embed=internal_embed)
                     except Exception:
                         pass
 
@@ -965,7 +1231,7 @@ class LobbyBot(commands.Cog):
 
         if before.channel:
             conn = sqlite3.connect(DB_FILE)
-            cursor = cursor = conn.cursor()
+            cursor = conn.cursor()
             cursor.execute(
                 'SELECT creator_id, created_at, members_count, announcement_msg_id, announcement_chan_id FROM ephemeral_vcs WHERE channel_id = ?', 
                 (before.channel.id,)
@@ -988,6 +1254,7 @@ class LobbyBot(commands.Cog):
                         except Exception as e:
                             print(f"⚠️ Could not delete dynamic announcement card: {e}")
 
+                # Standard log update
                 log_chan = await self.resolve_log_channel(before.channel.guild)
                 if log_chan:
                     log_embed = discord.Embed(
@@ -1002,6 +1269,23 @@ class LobbyBot(commands.Cog):
                     log_embed.set_footer(text="LobbyBot • Session Logs Manager")
                     try:
                         await log_chan.send(embed=log_embed)
+                    except Exception:
+                        pass
+
+                # Internal mirror log update
+                internal_chan = await self.resolve_internal_channel(before.channel.guild)
+                if internal_chan:
+                    log_embed_internal = discord.Embed(
+                        title="🧹 Ephemeral Voice Channel Closed",
+                        description=f"A dynamic channel has expired and was safely deleted.",
+                        color=discord.Color.red()
+                    )
+                    log_embed_internal.add_field(name="🏷️ Name", value=f"`{before.channel.name}`", inline=True)
+                    log_embed_internal.add_field(name="👤 Creator ID", value=str(creator_id), inline=True)
+                    log_embed_internal.add_field(name="⏳ Lifespan", value=f"`{duration_mins} minutes`", inline=True)
+                    log_embed_internal.add_field(name="👥 Total Joins", value=f"`{members_count} members`", inline=True)
+                    try:
+                        await internal_chan.send(embed=log_embed_internal)
                     except Exception:
                         pass
                 
