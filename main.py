@@ -8,6 +8,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.voice_states = True
 intents.guilds = True
+intents.members = True       # CRITICAL: Required to fetch player lists for DM broadcasts!
 
 class LobbyBotClient(commands.Bot):
     def __init__(self):
@@ -29,6 +30,14 @@ class LobbyBotClient(commands.Bot):
 
     async def on_ready(self):
         print(f"👑 LobbyBot is online! Logged in as: {self.user} (ID: {self.user.id})")
+        
+        # Pre-resolve and cache application owner ID for unconditional DM bypass overrides
+        try:
+            app_info = await self.application_info()
+            self.owner_id = app_info.owner.id
+            print(f"👑 Bot Owner resolved and cached: {app_info.owner} ({self.owner_id})")
+        except Exception as e:
+            print(f"⚠️ Failed to cache application owner details on ready: {e}")
 
 bot = LobbyBotClient()
 
@@ -39,3 +48,4 @@ if __name__ == "__main__":
     else:
         keep_alive()  # Runs the background Flask server to prevent Render from sleeping
         bot.run(token)
+
