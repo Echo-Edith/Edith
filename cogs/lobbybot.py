@@ -3,11 +3,13 @@ import random
 import re
 import discord
 import time
+import asyncio
 from discord import app_commands
 from discord.ext import commands, tasks
 
 DB_FILE = "lobbybot_data.db"
 CHANGELOG_CHANNEL_ID = 1512576440930009159
+ANNOUNCEMENT_CHANNEL_ID = 1526160846353338408
 
 class LobbyBot(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -509,6 +511,60 @@ class LobbyBot(commands.Cog):
         conn.commit()
         conn.close()
         print(f"📥 LobbyBot added to new server: '{guild.name}' ({guild.id})! Tracked for daily growth stats.")
+
+    # ==========================================================
+    # REAL-TIME PLAYER DIRECT MESSAGE BROADCAST LISTENER
+    # ==========================================================
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        """Listens to messages sent inside the designated channel to broadcast directly to player DMs."""
+        if message.author.bot:
+            return
+
+        if message.channel.id == ANNOUNCEMENT_CHANNEL_ID:
+            # Security verification: Ensure sender is bot owner or server administrator
+            is_owner = await self.bot.is_owner(message.author)
+            if not is_owner and not message.author.guild_permissions.administrator:
+                return
+
+            print(f"📢 Global Player Broadcast triggered by {message.author} inside target channel.")
+
+            # Create a premium announcement notification card
+            embed = discord.Embed(
+                title="📢 LobbyBot Global Announcement",
+                description=message.content,
+                color=discord.Color.gold(),
+                timestamp=message.created_at
+            )
+            embed.set_author(
+                name=message.author.display_name, 
+                icon_url=message.author.display_avatar.url if message.author.display_avatar else None
+            )
+            embed.set_footer(text="LobbyBot Broadcast Network • You received this as a player/member.")
+
+            if message.attachments:
+                embed.set_image(url=message.attachments[0].url)
+
+            # Collect all unique human members across mutual servers
+            unique_players = set()
+            for guild in self.bot.guilds:
+                for member in guild.members:
+                    if not member.bot:
+                        unique_players.add(member)
+
+            print(f"🚀 Sending direct announcements to {len(unique_players)} players...")
+
+            # Run asynchronous dispatch loop safely with slight pauses to prevent intense Discord rate-limiting
+            for player in unique_players:
+                try:
+                    await player.send(embed=embed)
+                    await asyncio.sleep(0.15)  # Pause to respect Discord API pacing
+                except discord.Forbidden:
+                    pass  # Quietly catch closed DMs
+                except Exception as e:
+                    print(f"⚠️ Failed to DM {player.name} ({player.id}): {e}")
+
+            print("✅ Global Player Announcement broadcast completed successfully.")
 
     # ==========================================================
     # COMPREHENSIVE UTILITY COMMANDS: /system-stats, /help, /changelogs
